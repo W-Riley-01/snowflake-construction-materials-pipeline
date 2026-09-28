@@ -18,7 +18,7 @@
 -- view returns zero rows.
 
 -- ---------------------------------------------------------
--- DIVERGENCES FROM docs/schema.md -- CONFIRM, then update schema.md
+-- DIVERGENCES FROM THE STAGE 3 DESIGN -- reconciled in docs/schema.md, 2026-09-28
 --
 -- 1. dim_material gains a `series_id` column (NOT in schema.md).
 --    schema.md gives dim_material only `material_name` and

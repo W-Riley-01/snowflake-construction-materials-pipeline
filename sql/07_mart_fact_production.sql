@@ -18,7 +18,7 @@
 -- 2021-2025, cement only.
 
 -- ---------------------------------------------------------
--- DIVERGENCES FROM docs/schema.md -- update schema.md to match
+-- DIVERGENCES FROM THE STAGE 3 DESIGN -- reconciled in docs/schema.md, 2026-09-28
 --
 -- 1. Eleven named measure columns replace the single
 --    `production_volume` column (Stage 5 Decision 3, wide grain).
