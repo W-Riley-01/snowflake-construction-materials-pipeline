@@ -1,8 +1,9 @@
 # Data Sources — Concrete & Cement Materials Market Pipeline
 
 **Stage:** 5 — Transform (in progress)
-**Status:** Stages 2–4 complete for all three sources. Stage 5 complete for USGS only.
-**Last updated:** 2026-09-18
+**Status:** Stages 2–4 complete for all three sources. USGS complete end to end
+through MART. BLS and Census not yet transformed.
+**Last updated:** 2026-09-28
 
 This document captures exact access method, identifiers, and cadence for each of
 the three sources feeding the pipeline. It is the integration documentation
@@ -225,7 +226,7 @@ in general. **USGS is treated as national-grain only**, same as BLS and Census.
 |---|---|---|---|---|---|---|---|
 | BLS PPI | REST API (JSON) | v2 key (registered) | Monthly | National | ✓ 7 rows | — | — |
 | Census VIP | REST API (JSON) | Key required (registered) | Monthly, 2-mo. lag | National | ✓ 378 rows (3 of 4 categories) | — | — |
-| USGS MCS | CSV data release | Public download, no key | Annual | National | ✓ 8,886 rows | ✓ 55 rows | — |
+| USGS MCS | CSV data release | Public download, no key | Annual | National | ✓ 8,886 rows | ✓ 55 rows | ✓ 5 rows (`fact_production`) |
 
 ---
 
@@ -773,9 +774,15 @@ defaulted, every sentinel would have collapsed to NULL and the difference betwee
 
 ## Stage 5 — Transform Decisions
 
-**Status:** Complete for USGS. Not started for BLS or Census.
-**Object built:** `STAGING.STG_USGS_MCS_CEMENT` — see
-`sql/05_staging_usgs_mcs_cement.sql`.
+**Status:** Complete for USGS, RAW through MART. Not started for BLS or Census.
+**Objects built:**
+- `STAGING.STG_USGS_MCS_CEMENT` — `sql/05_staging_usgs_mcs_cement.sql`
+- `MART.dim_time_annual`, `MART.dim_material`, `MART.dim_source` —
+  `sql/06_mart_dimensions.sql`
+- `MART.fact_production` — `sql/07_mart_fact_production.sql`
+
+Decisions 1–2 cover STAGING. Decisions 3–8 cover the MART layer. Numbering
+matches the references inside the SQL files.
 
 ### Decision 1 — STAGING layer implemented as standard views
 
@@ -978,6 +985,259 @@ is the correct and honest destination rather than a guess.
   on. `IF NOT EXISTS` would silently no-op on re-run, leaving an edited file and
   an unchanged view.
 
+### Decision 3 — `fact_production` grain: one row per year, one column per statistic
+
+**Chosen:** `fact_production` holds one row per year. Each of the eleven USGS
+statistics becomes its own named column, and each column carries exactly one
+unit and one additivity rule.
+
+**What the data showed before the decision was made.** The options were first
+framed before the actual statistics had been queried, and both initial framings
+were flawed. Reading the eleven statistics for one year settled it:
+
+- **"Production" is two rows, not one** — cement (84,000) and clinker (69,000).
+  Clinker is the intermediate that is ground into cement, so summing them
+  double-counts. USGS never treats clinker as a `Commodity` value anywhere in
+  the file; it exists only as a `Statistics_detail` inside the CEMENT chapter.
+- **The eleven split three ways on additivity:**
+
+| Statistic | Unit | Additivity |
+|---|---|---|
+| Cement production, clinker production, shipments, imports ×2, exports, apparent consumption | thousand metric tons | Additive — flows, safe to sum across years |
+| Stocks, year-end | thousand metric tons | **Semi-additive** — a balance; summing years is meaningless |
+| Employment | headcount | **Semi-additive** |
+| Price, average mill unit value | USD per metric ton | **Non-additive** |
+| Net import reliance | percent | **Non-additive** |
+
+  Stocks is the trap: same unit as production, so it looks summable.
+
+- **All eleven share one grain** — one value per statistic per year — which is
+  what makes a single wide row possible.
+
+**Rejected alternatives:**
+- **Narrow — production volume only.** One additive measure, honest to the
+  original `production_volume` column. Rejected because it discards the two
+  statistics the cross-source analysis depends on: average mill price is the
+  natural cross-check against BLS's cement PPI, and apparent consumption is the
+  natural pairing for Census construction spend. Also not actually "one row per
+  year" until a choice is made between cement and clinker production.
+- **Narrow, split into several fact tables** (production, trade, pricing). The
+  right pattern when measures belong to different business processes with
+  different sources and cadences. Wrong here: all eleven come from one annual
+  publication at one grain, and splitting 55 rows into four tables means four
+  sets of keys and four joins to reassemble what USGS published as one picture.
+- **Long — one row per statistic per year, generic `measure_value` column.**
+  Keeps everything, but puts additive and non-additive numbers in one column.
+  An unfiltered `SUM(measure_value)` adds tons to dollars to percentages.
+
+**Why, in William's words (refined):** C keeps every statistic USGS published
+available in the MART, each in a column with a single unit and a single
+additivity rule, so the price and consumption measures the cross-source analysis
+depends on are reachable — and because RAW and STAGING retain the full file,
+adding a column for a future statistic is a schema edit, not a data recovery.
+
+The refinement matters: the claim is not that C loses nothing, but that
+anything a MART choice leaves out is recoverable from a layer already built.
+That is a claim about the design, not the data.
+
+**Cost accepted:** USGS publishes long, so the MART load must pivot to wide. A
+new statistic in a future release means a schema change rather than new rows —
+the brittleness the long format protected against. Acceptable because the MART
+is a derived presentation layer: the change costs an edit, not a re-fetch.
+
+### Decision 4 — MART storage: dimensions as tables, facts as views
+
+**Chosen:** hybrid. Dimension tables are physical tables. Fact tables are views
+over STAGING that join to them.
+
+**Rejected alternatives:**
+- **Everything as tables (CTAS or INSERT).** Stable keys and cheap reads, but
+  the facts become snapshots that go silently stale until something rebuilds
+  them — the failure rejected for STAGING in Decision 1.
+- **Everything as views.** Always current, but surrogate keys would be computed
+  at read time (typically with `ROW_NUMBER()`) and nothing stored could promise
+  that `material_key = 1` still means cement on the next read. Every fact row's
+  foreign key could silently point at the wrong dimension row.
+
+**Why:** stable surrogate keys are a *prerequisite* for the conformed dimension
+in Decision 5. A conformed dimension only conforms if its keys mean the same
+thing permanently, which requires them to be stored. Facts have no stored
+identity anything depends on, so they can be views and stay current for free.
+
+The same reasoning removes `production_key` from `fact_production`. `schema.md`
+gave every fact its own surrogate key, but a view stores nothing, so a generated
+key would be recomputed on each read. Nothing references a fact row by key
+anyway. The grain `(time_key, material_key)` is the row's identity, enforced by
+a verification check.
+
+**The failure mode hybrid introduces:** if a dimension is missing a member, an
+`INNER JOIN` from a fact view drops the matching fact rows **silently** — no
+error, fewer rows. Guarded two ways: every dimension carries an **unknown
+member** at key `-1`, and fact views use `LEFT JOIN` with `COALESCE(key, -1)`,
+so unmatched rows land visibly against `Unknown` instead of vanishing. `-1`
+rather than `0` so it cannot be mistaken for a legitimate key. An anti-join
+check reports any row that lands there.
+
+**Cost accepted:** load order now matters. Dimensions must be populated before
+any fact view is queried — the pipeline's first dependency beyond
+RAW-before-STAGING.
+
+### Decision 5 — `fact_production` keeps a conformed `material_key`, constant at Cement
+
+**Chosen:** `fact_production` carries `material_key`, although every row
+currently resolves to Cement.
+
+**Rejected alternative:** omit it. The table is cement-only, so a key that never
+varies filters nothing.
+
+**Why, in William's words (refined):** `dim_material` is a **conformed
+dimension**, shared with `fact_price`. The key is what makes BLS cement price and
+USGS cement production comparable *in the model* rather than by convention.
+Without it, joining the two means matching on year and trusting both sides are
+about cement. With it, the model asserts they are the same material and the join
+proves it.
+
+**What separates this from `dim_region`** (Stage 3 Decision 3, dropped):
+`dim_region` had no source carrying regional data, so building it was
+speculation. Here the axis is real — the landed USGS file holds **127
+commodities**, deliberately landed in full by USGS Decision 3. Extending
+`fact_production` to lime or gypsum is a one-line change to the STAGING filter:
+no re-fetch, no new source. *Do not build a dimension for an axis no source
+supports; do carry the key for an axis the source already contains.*
+
+**Schema correction made alongside:** `dim_material` gained a `series_id` column
+not present in `schema.md`. `parent_series` is `WPU133` for all six child
+materials, so it cannot identify which material a BLS row belongs to. Without
+`series_id`, loading `fact_price` would mean joining on material names matched
+against BLS series titles — a string join against publisher text, which is what
+surrogate keys exist to avoid.
+
+**On the USGS side, the join is on the name** — USGS publishes no other
+identifier for a commodity. Made safe by the Decision 4 guard: a mismatch lands
+on the `-1` unknown member rather than vanishing, and a rename of `Cement` would
+first empty the STAGING view, whose filter matches the same string.
+
+**Cost accepted:** a join that filters nothing today, and a key implying
+variability the table does not yet have. Accepted because dropping a key later
+is cheap and retrofitting one into queries already written is not.
+
+### Decision 6 — Surrogate keys as explicit literals; the year as the time key
+
+**Chosen:** every dimension key is written as a literal in the `INSERT`
+statements of `sql/06_mart_dimensions.sql`. `dim_time_annual.time_key` holds the
+calendar year itself.
+
+**Rejected alternatives:**
+- **`AUTOINCREMENT` / `IDENTITY`.** The value depends on insertion order and
+  history. A rebuild in a different order can reassign keys.
+- **A `SEQUENCE`.** Same order-dependence, and it keeps climbing across rebuilds.
+
+**Why, in William's words (refined):** key values live in version-controlled
+SQL, so rebuilding the MART from scratch produces identical keys. The danger
+with generated keys is not that a rebuild fails — it is that a rebuild
+*succeeds* and every fact row's foreign key now points at a different dimension
+row. No error.
+
+**The year needs no surrogate.** Surrogate keys exist to insulate a warehouse
+from source identifiers that get renamed, reused, or retired — `'Cement'` could
+become `'Cement, hydraulic'`. A calendar year has none of those properties. Time
+dimensions are the standard exception: `YYYY` here, `YYYYMM` for
+`dim_time_monthly`. A fact row reading `time_key = 2023` is legible without a
+join. The column keeps the name `time_key` so the ERD and foreign-key naming
+stay valid; `year` is retained alongside it as the documented cross-grain
+correlation column shared with `dim_time_monthly`.
+
+**Related implementation choice — `CREATE OR REPLACE TABLE` for dimensions**,
+deliberately unlike the RAW scripts' `IF NOT EXISTS`. RAW protects landed data
+that cannot be recovered without re-fetching. These tables hold no landed data:
+every row is a committed literal, so replacing them reproduces identical content.
+The file is the single source of truth for dimension membership; a row added by
+hand outside it is destroyed on the next run, by design.
+
+**Platform fact recorded:** Snowflake accepts `PRIMARY KEY` and `FOREIGN KEY`
+constraints but **does not enforce them** — only `NOT NULL` is enforced. The
+constraints are metadata for readers and hints for the optimizer. Key uniqueness
+therefore has to be checked explicitly; in an enforcing database the check would
+be redundant.
+
+**Cost accepted:** the MART has two key conventions — meaningful keys for time,
+opaque surrogates for everything else. Documented here so it reads as deliberate.
+
+### Decision 7 — Pivot by conditional aggregation, not `PIVOT`
+
+**Chosen:** `MAX(CASE WHEN measure = '...' THEN value_numeric END) AS <name>`,
+one line per column.
+
+**Rejected alternatives:**
+- **Dynamic `PIVOT ... IN (ANY)`.** Every distinct value automatically becomes a
+  column. **Initially chosen, then reversed** — the stated reason for choosing it
+  ("easier if we find out a new statistic has been released") was the argument
+  against it. With dynamic pivot you *don't* find out: the column appears with no
+  code change, no review, and no check firing. Worse, the column names become the
+  publisher's text — `Production: Portland, blended, and masonry cement` — so
+  every query must quote them exactly, and a USGS rewording makes the old column
+  vanish and a new one appear, breaking every consumer. Publisher wording becomes
+  the schema. This is the same reasoning as the `series_id` decision: do not let
+  publisher-controlled text become your identifiers.
+- **Explicit `PIVOT ... IN ('...')`.** Workable, but column names still derive
+  from data values and need renaming afterward.
+
+**Why:** column names are what analysts read, so they should be chosen and
+documented by this project, not derived from the publisher's copy. And the
+per-column unit and additivity documentation Decision 3 requires needs a place
+to live — it is attached as a Snowflake column `COMMENT` on each measure in the
+view definition, visible to anyone browsing the view in Snowsight.
+
+**Publisher text confined to one place.** A `statistic_map` CTE at the top of
+the view translates each USGS `statistic_detail` into a short measure code owned
+by this project. The pivot matches on the codes. A rewording is a one-line edit
+to the map; the pivot never changes.
+
+**Pivot key is `statistics_detail`, not `statistics`.** `Production` appears
+twice per year under `statistics`. Pivoting on it would collapse cement and
+clinker into one cell, and `MAX` would silently return 84,000 as "production"
+while clinker disappeared.
+
+**What conditional aggregation does *not* solve, stated honestly:** the map
+still matches publisher text, so a rewording still makes a measure go NULL for
+the new release. What changes is *where* the damage lands — one line in one
+file, invisible to consumers — and that it is detected. Two checks:
+1. **Unmapped statistics** — any `statistic_detail` in STAGING with no map entry.
+2. **Empty measures** — any measure NULL in a row whose
+   `non_value_measure_count` is 0, meaning the value was not withheld but simply
+   not found.
+
+A rewording trips both at once; a genuinely new statistic trips only the first.
+
+**Cost accepted:** a new statistic is ignored by the view until a line is added
+to the map. Made loud by check 1.
+
+### Decision 8 — Sentinel visibility in the MART: one summary column
+
+**Chosen:** `fact_production` carries `non_value_measure_count` — the number of
+measures in that row whose source value was not a plain number.
+
+**Rejected alternatives:**
+- **Numbers only.** Flags stay in STAGING, one query away. Preserves the
+  distinction, but not where analysts look: a future `W` for cement production
+  arrives in the MART as a bare NULL, indistinguishable from a value that was
+  never collected.
+- **A flag column per measure.** Complete, but eleven more columns doubling the
+  table's width.
+
+**Why, in William's words:** it gives a clear view of the data and a NULL cannot
+be mistaken for clean data. Zero means every measure in the row is a real
+number. Anything else means check `STAGING.STG_USGS_MCS_CEMENT.value_flag`
+before trusting a NULL in that row.
+
+This is the MART-layer end of the sentinel design that began with TEXT columns
+at RAW (USGS Decision 2) and the three-column routing in STAGING (Decision 2):
+the distinction between *withheld*, *not available*, and *zero* is preserved at
+every layer, at a cost proportionate to each layer's purpose.
+
+**Cost accepted:** the column says *that* a row has a non-value measure, not
+*which* one or *why*. Finding out requires STAGING.
+
 ### Verification performed (Stage 5 — USGS)
 
 | Check | Expected | Result |
@@ -988,6 +1248,21 @@ is the correct and honest destination rather than a guess.
 | Cast integrity | zero rows where flag = `VALUE` and numeric is NULL | ✓ |
 | Routing logic (all 8,886 RAW rows) | every category exercised; total = 8,886 | ✓ 9 categories, 8,886 |
 | Deployed view matches repo file (`GET_DDL`) | qualifier list current | ✓ |
+| **MART** — dimension row counts | 6 / 8 / 4 (each includes `-1`) | ✓ |
+| Dimension key uniqueness (PKs not enforced) | zero duplicates | ✓ |
+| Every STAGING year has a `dim_time_annual` row | zero missing | ✓ |
+| Every STAGING commodity has a `dim_material` row | zero missing | ✓ |
+| `fact_production` row count | 5 (2021–2025) | ✓ |
+| 2025 spot check against published file | 84000 / 69000 / 110000 / 160 / 21 / 0 | ✓ |
+| Conformed join resolves to BLS series | 5 rows, all Cement / `WPU1322` | ✓ |
+| Unmapped statistics | zero | ✓ |
+| Duplicate STAGING rows per year and statistic | zero | ✓ |
+
+One expected value was wrong, not the data: the dimension row-count check
+originally stated `dim_material` should hold 9 rows. It holds 8 — the unknown
+member plus seven materials. Resolved by counting the `INSERT`, not by adjusting
+the data to meet the assertion. When a check fails, establish which side is
+wrong before fixing either.
 
 ### Known debt — Stage 5
 
@@ -998,59 +1273,65 @@ updated and the view was not, and the diagnostic kept returning correct numbers
 from its own copy while the deployed view was stale. Caught by `GET_DDL`. The
 production fix is a UDF called by all three; deliberately not done under deadline.
 
+The same pattern recurs, deliberately and visibly, in
+`sql/07_mart_fact_production.sql`: the `statistic_map` list exists once in the
+view and once in verification check 3, because a CTE cannot be referenced from
+outside its view. Flagged in the file itself. The fix is to promote the map to a
+small table in the MART schema that both the view and the check read — worth
+doing when a second commodity or a rewording forces an edit to the map.
+
 ---
 
 ## Open items carried forward
 
-1. **Census `category_code` verification — OPEN, deliberately descoped.**
-   Census's Economic Indicator Division responded indicating `02XX` is Office and
-   `12XX` is Highway and Street. This **contradicts** the empirically inferred
-   mapping, which recorded `12XX` as Office. Census also supplied the
-   authoritative route: download the VIP dataset from
-   `https://www.census.gov/econ_getzippedfile/?programCode=VIP` (index at
-   `https://www.census.gov/econ_datasets/`). The reply's phrasing ("it looks
-   like") suggests a support reading of the same API rather than an internal code
-   table, so the zipped dataset — not the email — is the artifact to verify
-   against. **This is not a one-line dict edit:** the authoritative list may
-   invalidate more than one of the ten inferred mappings, and any correction
-   requires a re-fetch and re-verify of `CENSUS_VIP_RAW`.
-   **Scheduling decision:** deferred behind Stage 5 rather than resolved first.
-   Rationale — the codes block only `fact_spend`, and an unbounded re-fetch cycle
-   under deadline risked arriving with corrected Census data and nothing built
-   downstream of RAW for any source.
+1. **USGS release precedence — must be decided before a second release is
+   loaded (next USGS release expected ~February 2027).** USGS Decision 4 set RAW
+   to *append* each annual release. Each release covers five years, so the 2027
+   release (2022–2026) will overlap the 2026 release (2021–2025) on four years,
+   and USGS revises prior-year figures in later releases. STAGING will then hold
+   two rows for each overlapping year and statistic, and `MAX` in the
+   `fact_production` pivot will silently pick the larger — one row mixing figures
+   from two releases, no error. Stage 4 recorded the *append* but not the
+   *precedence rule* append requires. Almost certainly "latest release wins," but
+   that needs a reliable ordering, and `source_file` names are not yet consistent
+   (the 2026 file was staged under its published name; the fetch script
+   timestamps future files). **Guard until decided:** verification check 5 in
+   `sql/07_mart_fact_production.sql` fails the moment a duplicate appears. Run it
+   after every USGS load.
 
-2. **`fact_production` grain — UNRESOLVED, blocks MART.** `STG_USGS_MCS_CEMENT`
-   holds 11 statistics per year; `fact_production` as designed has one measure
-   column, `production_volume`. The eleven are not all the same kind of number —
-   production volume is additive, a price is not summable across years, net
-   import reliance is a percentage. Two options: keep one narrow measure and drop
-   ten statistics, or change the grain to one row per statistic per year with a
-   generic measure plus unit. The second has implications for whether
-   `dim_material` is the right dimension. **In a staffed environment this is a
-   stakeholder decision** — who consumes the table and what questions it must
-   answer. Undecided.
+2. **Census `category_code` verification — OPEN, deliberately descoped.**
+   Census's Economic Indicator Division indicated `02XX` is Office and `12XX` is
+   Highway and Street, contradicting the empirically inferred mapping — though
+   `12XX`'s own observed data tracked Office's published figures, which is
+   evidence against the reply (see Census Decision 1 amendment). The zipped VIP
+   dataset at `https://www.census.gov/econ_getzippedfile/?programCode=VIP`
+   (index: `https://www.census.gov/econ_datasets/`) is the tiebreaker, not the
+   email. Any correction requires a re-fetch and re-verify of
+   `CENSUS_VIP_RAW`. Blocks `fact_spend` only.
 
-3. **Repo completeness — SQL exists only in Snowsight.** `sql/` contains `01`,
-   `02` and `05`. The Census and USGS RAW landing scripts exist as Snowsight
-   workspace files (`raw_census_vip_landing.sql`, `raw_usgs_mcs_landing.sql`) and
-   have never been saved to the local repo or version control. Export both to
-   `sql/03_raw_census_vip_landing.sql` and `sql/04_raw_usgs_mcs_landing.sql`.
+3. **BLS Stage 4 Decisions 1–3 are reconstructions — CONFIRM.** Rebuilt from the
+   committed SQL because the original text was never saved. BLS Decision 3
+   especially: in your own words, why `.env` rather than a Snowflake `SECRET`,
+   and what would a `SECRET` have required?
 
-4. **BLS Stage 4 Decisions 1–3 are reconstructions — CONFIRM.** Census 1–4 and
-   BLS 4 were recovered from session records. BLS 1–3 were rebuilt from the
-   committed SQL because the original text was never saved. Each is marked in
-   the Stage 4 section. Read them and either confirm the reasoning or amend it
-   in your own words — BLS Decision 3 especially, since it records a change of
-   plan from Stage 2.
+4. **Stage 5 remaining:** BLS PPI STAGING view — the first `FLATTEN` over a
+   `VARIANT` payload — then `dim_time_monthly` and `fact_price`. Census last.
 
-5. **Stage 5 remaining:** BLS PPI and Census VIP STAGING views. BLS requires
-   `FLATTEN` over the `VARIANT` payload — the first semi-structured transform in
-   the project.
+5. **Transient vs. permanent tables — still undecided** for RAW and for the MART
+   dimension tables. Both are reproducible from source — RAW from public files,
+   the dimensions from committed literals — which is the usual argument for
+   transient (no Fail-safe, lower storage cost). The dimensions were created
+   permanent by default, and that default is noted in
+   `sql/06_mart_dimensions.sql` as a decision not yet taken.
 
-6. **Stale copies in project knowledge base.** `fetch_bls_ppi.py` still contains
-   the bare relative `OUTPUT_DIR = "data/bls_ppi"` path bug fixed in the repo.
-   The August 30 handoff files are superseded. `upload_bls_to_snowflake.py` was
-   deleted from the repo but remains uploaded.
+6. **Stale copies in the project knowledge base.** `fetch_bls_ppi.py` there still
+   has the relative-path bug fixed in the repo; the August 30 handoff files and
+   the deleted `upload_bls_to_snowflake.py` are superseded. The repo is now the
+   source of truth.
 
-7. **Deferred Snowflake decisions, not yet made:** transient vs. permanent tables
-   for RAW, and surrogate key generation strategy for the MART dimensions.
+**Resolved since the last revision:**
+- `fact_production` grain — Decision 3.
+- Surrogate key generation strategy — Decision 6.
+- Census and USGS landing SQL existing only in Snowsight — exported to
+  `sql/03_` and `sql/04_` and committed.
+- `schema.md` diverging from the built objects — reconciled in `docs/schema.md`.
