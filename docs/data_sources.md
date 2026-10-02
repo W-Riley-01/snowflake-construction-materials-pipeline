@@ -1238,6 +1238,184 @@ every layer, at a cost proportionate to each layer's purpose.
 **Cost accepted:** the column says *that* a row has a non-value measure, not
 *which* one or *why*. Finding out requires STAGING.
 
+### Decision 9 — BLS release precedence: STAGING keeps every load; `fact_price` takes the latest
+
+**Chosen:** `stg_bls_ppi` holds one row per series per period **per load**.
+`fact_price` selects, for each series and month, the whole row with the most
+recent `loaded_at` (`ROW_NUMBER() OVER (PARTITION BY series_id, year, month ORDER
+BY loaded_at DESC)` with `QUALIFY ... = 1`).
+
+**Rejected alternatives:**
+- **Keep only the latest row in STAGING.** Loses the record that a value was
+  revised, and STAGING stops being a faithful view of RAW. Revision history is
+  one of the few things BLS data can tell you that a snapshot cannot.
+- **Aggregate across loads with `MAX` or `AVG` in the fact.** This is the exact
+  exposure the USGS pivot carries: one row silently built from figures out of two
+  different publications.
+- **Truncate and reload RAW on each pull.** Breaks RAW's immutability (Stage 4).
+
+**Why:** BLS revises preliminary figures for up to four months, so overlapping
+pulls are the normal case, not an edge case. Unlike USGS, where release
+precedence is still open, BLS has a usable ordering: one `loaded_at` per pull,
+and every pull carries the whole series. `ROW_NUMBER` picks one complete row —
+it cannot mix a value from one load with a value from another.
+
+**Cost accepted:** `loaded_at` orders *loads*, not *publications*. Re-loading an
+older file after a newer one would make the older values win. Verification check
+5 in `sql/09_mart_fact_price.sql` lists every month covered by more than one
+load, so the winners can be inspected. **The rule has been tested only against a
+single load** — the `QUALIFY` path that discards an older row has not yet run on
+real data. It will first run when a second pull is loaded.
+
+### Decision 10 — `is_preliminary` travels with every `fact_price` row
+
+**Chosen:** `fact_price` carries a boolean `is_preliminary`, TRUE when BLS
+footnote code `P` is present.
+
+**Rejected alternatives:**
+- **Drop preliminary rows.** Removes the most recent four months of every series —
+  the months a price series is most often read for.
+- **Leave the footnote in STAGING only.** A consumer of `fact_price` would see an
+  index value that looks final and may change.
+
+**Why:** the same principle as Decision 8. A preliminary value and a final one are
+indistinguishable as numbers, so the status has to travel with the row. A status
+flag on the fact sits in the same family as `non_value_measure_count`.
+
+**Shape finding behind the implementation:** every BLS observation has a
+`footnotes` array, but when there is no footnote the array holds **one empty
+object** (`[{}]`), not zero elements. Reading `footnotes[0]:code` would have
+worked today and failed for a second footnote in position two. The view uses
+`FILTER` over the whole array, and also exposes every code as `footnote_codes`
+text so a code other than `P` appears as a value to look at instead of being
+ignored.
+
+**Cost accepted:** a column that was not in the Stage 3 design.
+
+### Decision 11 — Monthly grain enforced in `fact_price`; STAGING keeps every period
+
+**Chosen:** `stg_bls_ppi` carries `period` exactly as BLS sends it and sets
+`month` only when the period is `M01`–`M12` (NULL otherwise). `fact_price`
+filters on `month IS NOT NULL`.
+
+**Rejected alternatives:**
+- **Filter in STAGING.** A silent drop at the layer that is supposed to be
+  faithful — the filter-position argument from USGS Decision 3.
+- **Exclude by name: `period <> 'M13'`.** Names one known code and misses
+  `S01`/`S02` or anything BLS adds later. A positive definition of what counts as
+  a month is stricter than a list of what does not.
+
+**Why:** the fact table is where grain is defined. `M13` is an annual average;
+mixing it into monthly rows would corrupt any `AVG` run over them. The profile of
+`RAW.BLS_PPI_RAW` found no `M13` in this pull, so the filter excludes nothing
+today — and STAGING verification check 4 reports any row it would exclude.
+
+**Cost accepted:** a silent drop in the view, made loud in a check — the same
+trade as Decision 7.
+
+### Decision 12 — `dim_time_monthly` generated from fixed bounds; key is `YYYYMM`
+
+**Chosen:** the dimension is populated by `INSERT ... SELECT` over `GENERATOR`
+with a fixed start date (2016-01-01) and a fixed `ROWCOUNT` of 132, plus the `-1`
+unknown member. `time_key = year * 100 + month`.
+
+**Rejected alternatives:**
+- **132 hand-typed literal rows.** Consistent with Decision 6's convention for
+  opaque keys, but noise and a typo risk for a key that is a pure function of the
+  date.
+- **Derive the range from the data (`MIN`/`MAX` of the fact).** Dimension
+  membership would then depend on the data, so nothing would catch a month
+  missing from the dimension.
+- **`AUTOINCREMENT` or a sequence.** History-dependent; rejected in Decision 6.
+
+**Why:** Decision 6 requires that a rebuild reproduce identical keys. A key
+computed from a date satisfies that without literals. The range, 2016-01 to
+2026-12, covers the BLS history plus the rest of the current year so new monthly
+pulls land on existing rows.
+
+**Cost accepted:** the range is hand-maintained — raise `ROWCOUNT` by 12 per
+added year. Anti-join check 8 in `sql/09_mart_fact_price.sql` reports any BLS
+month outside it. The Census range has **not** been checked against it; that
+happens when `fact_spend` is built.
+
+### Decision 13 — Census category derived from the code, not read from the stamped label
+
+**Chosen:** `stg_census_vip` derives `construction_category` from
+`category_code` through one map (`category_map`) inside the view. The
+`category_label` the fetch script stamped into RAW is kept as
+`category_label_raw` for comparison only.
+
+**Rejected alternative:** read `category_label` from the payload, as the RAW row
+already carries it.
+
+**Why:** `category_code` is what Census sent. The label is *our interpretation* of
+that code, reached by cross-referencing live values against press-release tables
+(Census Decision 1), and then written into RAW at fetch time. An interpretation
+stored in RAW can only be corrected by re-fetching; the same interpretation held
+in a STAGING view is corrected by editing a line. This is the same principle as
+sentinel routing in Decision 2: interpretation happens downstream, where it can
+change.
+
+This partly retires a line in open item 2 ("any correction requires a re-fetch
+and re-verify of `CENSUS_VIP_RAW`"). A *label* correction now costs one edit. A
+re-fetch is still needed to land a category that is not yet in RAW (Highway and
+Street).
+
+**Guard:** a verification check reports any row where the stamped label
+disagrees with the map. After an intended map correction that check will fire
+by design, and the stamped label is expected to be stale.
+
+**Cost accepted:** the map is a CTE in the view, so changing it means editing
+and redeploying `sql/10_staging_census_vip.sql`. The better home is a small
+MART table that the view and its checks both read — worth doing when a second
+category forces an edit (see Known debt, Decision 7).
+
+### Decision 14 — `category_verified` travels with every Census row
+
+**Chosen:** `stg_census_vip` and `fact_spend` carry a boolean `category_verified`,
+set in the category map. FALSE for all three landed categories.
+
+**Rejected alternatives:**
+- **Record the status in documentation only.** Invisible to anyone querying
+  `fact_spend`, and a labelled number reads as a fact.
+- **Leave unverified categories out.** Would leave `fact_spend` empty; the
+  data under each code is real regardless of how the code was named.
+
+**Why:** Census Decision 1 logged the mappings at "High" confidence, and the
+2026-09-09 amendment showed that rating was confidence in a **method**, not
+verification against a source of record — another code in the same table was
+contradicted. The flag makes that distinction part of the data. When a code is
+checked against the Census zipped VIP dataset, one flag in the map flips to
+TRUE; nothing else changes.
+
+**Scope of the risk:** the contradicted codes (`02XX`, `12XX`) are not landed, so
+no row in `fact_spend` depends on the contradicted mapping. The three landed
+codes were reached by the same method and are not confirmed either. The flag is
+what keeps that from being forgotten.
+
+**Cost accepted:** a status column on the fact that is FALSE on every row today.
+
+### Decision 15 — Fields assumed constant are kept and checked, not dropped
+
+**Chosen:** `data_type_code`, `seasonally_adj`, `us` and `time_slot_id` are
+carried through STAGING even though each has one value today (`T`, `no`, `1`,
+`0`). A check reports any row that breaks the assumption.
+
+**Rejected alternative:** drop columns that never vary.
+
+**Why:** "every row is national, monthly, unadjusted and type T" is an
+assumption `fact_spend`'s grain depends on. If seasonally adjusted rows ever
+landed beside unadjusted ones, they would compete for the same
+(category, month) slot and the fact would double count or pick one arbitrarily.
+Keeping the columns turns the assumption into a one-query check instead of a
+belief. The release-precedence rule is otherwise the same as `fact_price`
+(Decision 9): latest `loaded_at` wins per category code and month, partitioned
+by code rather than the derived name so a map edit cannot merge or split groups.
+
+**Cost accepted:** four columns of nothing in the view. Also inherited from
+Decision 9: `loaded_at` orders loads, not publications, and the rule has run on a
+single load only.
+
 ### Verification performed (Stage 5 — USGS)
 
 | Check | Expected | Result |
@@ -1264,6 +1442,113 @@ member plus seven materials. Resolved by counting the `INSERT`, not by adjusting
 the data to meet the assertion. When a check fails, establish which side is
 wrong before fixing either.
 
+### Verification performed (Stage 5 — BLS)
+
+| Check | Expected | Result |
+|---|---|---|
+| RAW matches the sample payload | 7 series × 127 observations, one `loaded_at` | ✓ |
+| RAW profile: duplicates, `M13`, non-numeric values | zero | ✓ |
+| `stg_bls_ppi` row count | 889 | ✓ |
+| `stg_bls_ppi` flag census | all `VALUE`; zero cast failures | ✓ |
+| Non-monthly periods (`month IS NULL`) | zero | ✓ |
+| Duplicates within a single load | zero | ✓ |
+| Preliminary rows | 28 (7 series × latest 4 months) | ✓ |
+| Footnote codes other than `P` | zero | ✓ |
+| **MART** — dimension row counts | 6 / 133 / 8 / 4 (each includes `-1`) | ✓ |
+| Dimension key uniqueness (PKs not enforced) | zero duplicates | ✓ |
+| `fact_price` row count | 889 | ✓ |
+| `fact_price` grain `(time_key, material_key)` unique | zero duplicates | ✓ |
+| Unknown-member rows in `fact_price` | zero | ✓ |
+| NULL `price_index` | zero | ✓ |
+| Every BLS month has a `dim_time_monthly` row | zero missing | ✓ |
+| Every BLS series has a `dim_material` row | zero missing | ✓ |
+| Months covered by more than one load | zero (single load) | ✓ |
+| Regression value, Cement 2026-07 | 357.489, preliminary | ✓ — from the same pull, so this shows the view reproduces RAW, **not** that RAW matches BLS |
+| Cross-grain join, `fact_price` × `fact_production` on `year` | 5 rows, 2021–2025, all Cement | ✓ — avg price index 271.0 → 358.4; production 91,000 → 84,000 thousand t |
+| `fact_production` unaffected by the rebuild of the dimensions | 5 rows | ✓ |
+
+**Not yet done:** one BLS value compared by hand against data.bls.gov — the only
+check that would independently confirm RAW against the publisher.
+
+### Deployment findings (Stage 5 — BLS)
+
+Two partial deployments occurred, and in each the tool reported success. A third
+point records what they changed about process:
+
+1. **Grants:** Snowsight's Run executes only the statement under the cursor
+   unless Run All is used. Running a five-statement grant script reported
+   success after executing only `USE ROLE`. Detected by re-reading
+   `SHOW GRANTS` and finding it unchanged.
+2. **`06_mart_dimensions.sql`:** the three original dimensions were recreated but
+   `dim_time_monthly` did not exist afterwards — the old version of the file was
+   run, or the run stopped before the new block. `09` then failed on the missing
+   join target. Detected by `SHOW TABLES` against the catalog.
+3. **Consequence for process:** a run result says the statement executed, not
+   that the object is the one in the repo. Verify deployments against the
+   catalog (`SHOW`, `GET_DDL`, row counts), not against the success message.
+   This is the silent-failure pattern again, in deployment instead of ingestion.
+
+### Verification performed (Stage 5 — Census)
+
+| Check | Expected | Result |
+|---|---|---|
+| RAW profile: categories, months, duplicates, malformed periods, non-numeric values | 3 categories × 126 months; zero problems | ✓ |
+| `stg_census_vip` row count | 378 | ✓ |
+| Distinct category codes | 3 | ✓ |
+| Value flag census | all `VALUE` | ✓ |
+| Malformed periods (`month IS NULL`) | zero | ✓ |
+| Unmapped category codes | zero | ✓ |
+| Map vs. stamped label disagreements | zero | ✓ |
+| Assumed-constant fields violated | zero | ✓ |
+| Duplicates within a single load | zero | ✓ |
+| `category_verified` TRUE rows | zero (nothing verified yet) | ✓ |
+| `fact_spend` row count | 378 | ✓ |
+| `fact_spend` grain `(time_key, construction_category)` unique | zero duplicates | ✓ |
+| Unknown-member rows | zero | ✓ |
+| NULL `spend_amount` | zero | ✓ |
+| Categories present | 3 | ✓ |
+| Months covered vs. `dim_time_monthly` | 201601–202606, none missing | ✓ |
+| Regression value, Commercial 2019-01 | 6009 | ✓ — from the same pull; proves the view reproduces RAW, **not** that RAW matches Census |
+| Two-fact monthly join, `fact_price` × `fact_spend` on `time_key` | 126 months, 201601–202606 | ✓ — no fan-out (price read with `MAX`, spend summed) |
+
+The join's endpoint values are not a trend: January and June are compared in
+unadjusted data, so they differ seasonally.
+
+**Not yet done:**
+- One Census value compared by hand against a Census release table.
+- Category codes checked against the Census zipped VIP dataset (open item 2).
+- The dollar unit is **assumed to be millions of dollars**, taken from the Census
+  release tables the codes were cross-referenced against. It is not carried in
+  the API payload.
+
+### Verification performed (Stage 5 — independent spot checks, 2026-10-02)
+
+Compared against FRED (Federal Reserve Bank of St. Louis), which republishes BLS
+and Census series. **FRED is a secondary source.** A direct comparison against
+bls.gov and census.gov is still a manual step.
+
+| Check | Result |
+|---|---|
+| BLS `WPU1322` identity and units | FRED lists it as "Cement, Hydraulic", Index 1982=100, not seasonally adjusted — consistent with `dim_material` (Cement) |
+| BLS `WPU1322` values, 14 months across 2016–2026 | **12 of 14 identical to the thousandth.** The two differences are June and July 2026 (ours 357.838 and 357.489; FRED now 357.572 and 355.665). Both are preliminary (`is_preliminary = TRUE`) in our data. Consistent with BLS revising preliminary values; the cause was **not** confirmed against a vintage archive (ALFRED) |
+| Census Commercial (`03XX`) vs. FRED `TLCOMCON`, all 126 months | **124 of 126 identical.** Differences: May 2026 (ours 10,336; FRED 10,425) and June 2026 (ours 10,460; FRED 10,568) — the two most recent months at pull time. Yearly sums for 2016–2025 and January–April 2026 are identical |
+| Census unit | FRED lists the series in Millions of Dollars, not seasonally adjusted — confirms the assumed unit for the Commercial series |
+
+**What this does and does not establish.** It is strong value-level evidence that
+`03XX` is Commercial total construction spending, unadjusted, in millions of
+dollars — far stronger than the two-month cross-reference in Census Decision 1.
+It does not address `02XX` or `12XX` (not landed), and it is not the authoritative
+code table. `category_verified` is **unchanged (all FALSE)**; whether a
+republication by FRED is enough to flip a flag is a decision still to be made.
+
+**Not yet done:** the other six BLS series; Census Power (`11XX`) and
+Manufacturing (`20IX`); USGS cement against the MCS 2026 report; any direct
+comparison at bls.gov or census.gov.
+
+**Method note for next time.** Compare settled months first. A recent month can
+legitimately differ because the publisher revised it after the pull, and the
+mismatch is then the pipeline working, not failing.
+
 ### Known debt — Stage 5
 
 The `CASE` expression exists in **three places** in
@@ -1279,6 +1564,16 @@ view and once in verification check 3, because a CTE cannot be referenced from
 outside its view. Flagged in the file itself. The fix is to promote the map to a
 small table in the MART schema that both the view and the check read — worth
 doing when a second commodity or a rewording forces an edit to the map.
+
+`dim_time_monthly` covers 2016-01 to 2026-12 by a hard-coded `ROWCOUNT`. It needs
+raising by 12 each year, and nothing fails when the range runs out except the
+`-1` unknown member filling up — caught by anti-join check 8 in
+`sql/09_mart_fact_price.sql`. The alternative (deriving the range from the data)
+was rejected in Decision 12.
+
+The `fact_price` precedence rule (Decision 9) is untested on real overlapping
+loads. It runs correctly on one load, which proves only that it does not damage a
+single-load result.
 
 ---
 
@@ -1306,16 +1601,25 @@ doing when a second commodity or a rewording forces an edit to the map.
    evidence against the reply (see Census Decision 1 amendment). The zipped VIP
    dataset at `https://www.census.gov/econ_getzippedfile/?programCode=VIP`
    (index: `https://www.census.gov/econ_datasets/`) is the tiebreaker, not the
-   email. Any correction requires a re-fetch and re-verify of
-   `CENSUS_VIP_RAW`. Blocks `fact_spend` only.
+   email. **Current effect:** `fact_spend` is built on the three landed categories,
+   all `category_verified = FALSE` (Decision 14). Neither disputed code is landed.
+   Correcting a *landed* code's label is an edit to the STAGING map, not a
+   re-fetch (Decision 13). Highway and Street, once its code is settled, needs one
+   map line and one load. `fact_spend` is not a total until then.
+
+   *2026-10-02:* Commercial (`03XX`) matches FRED's republication of the Census
+   Commercial series in 124 of 126 months. Strong value-level evidence for
+   `03XX`; it does not address `02XX`/`12XX`, which are not landed. Flags left
+   FALSE pending a decision on whether this suffices.
 
 3. **BLS Stage 4 Decisions 1–3 are reconstructions — CONFIRM.** Rebuilt from the
    committed SQL because the original text was never saved. BLS Decision 3
    especially: in your own words, why `.env` rather than a Snowflake `SECRET`,
    and what would a `SECRET` have required?
 
-4. **Stage 5 remaining:** BLS PPI STAGING view — the first `FLATTEN` over a
-   `VARIANT` payload — then `dim_time_monthly` and `fact_price`. Census last.
+4. **Stage 5 transform layer — complete (2026-10-02).** USGS, BLS and Census each
+   have a STAGING view and a MART fact view; four dimensions are built. Remaining
+   work is verification and documentation, not construction.
 
 5. **Transient vs. permanent tables — still undecided** for RAW and for the MART
    dimension tables. Both are reproducible from source — RAW from public files,
@@ -1324,10 +1628,41 @@ doing when a second commodity or a rewording forces an edit to the map.
    permanent by default, and that default is noted in
    `sql/06_mart_dimensions.sql` as a decision not yet taken.
 
+   *Snowflake's documentation
+   advises permanent tables for long-lived data and positions transient tables for
+   transitory work tables such as ETL staging, because transient tables have no
+   Fail-safe period and at most one day of Time Travel. This project has no
+   transitory work tables (STAGING is views), the data is about 3 MB so the storage
+   saving is negligible, and RAW can only be rebuilt by re-fetching from publishers
+   who revise or replace files. Recommended outcome: leave every table permanent and
+   record that as the decision. Still undecided until confirmed.*
+
 6. **Stale copies in the project knowledge base.** `fetch_bls_ppi.py` there still
    has the relative-path bug fixed in the repo; the August 30 handoff files and
    the deleted `upload_bls_to_snowflake.py` are superseded. The repo is now the
    source of truth.
+
+7. **Snowflake MCP access for Claude — scoped role.** `CLAUDE_MCP_ROLE` is
+   read-only: `USAGE` on the database and the `STAGING`, `MART`, `PUBLIC` and
+   `RAW` schemas, `SELECT` on `RAW.BLS_PPI_RAW`, and `SELECT` on future views in
+   `STAGING` and future tables and views in `MART`. It has no create or write
+   privileges, so it can verify objects but not deploy them. Widen `RAW` access
+   one table at a time as each source is built (`CENSUS_VIP_RAW` next).
+
+8. **Publisher verification — partly done (2026-10-02).** BLS `WPU1322` and Census
+   Commercial were compared against FRED's republication (see "independent spot
+   checks"): 12 of 14 and 124 of 126 months identical, with the differences in
+   preliminary or most-recent months. Remaining: the other six BLS series, Census
+   Power and Manufacturing, USGS against the MCS 2026 report, and direct
+   comparison at the publishers' own sites.
+
+9. **USGS file may have changed after it was loaded.** `MCS2026_Commodities_Data.csv`
+   was loaded 2026-09-08. The USGS data release page currently shows a date of
+   September 18, 2026, and the MCS 2026 report itself exists as version 1.0
+   (February) and version 1.1 (March). What that date means is **not known** — it
+   may be a page update, not a file change. Check the file's modified date or
+   version on ScienceBase against the file loaded. If it did change, this is the
+   first real test of release precedence (item 1).
 
 **Resolved since the last revision:**
 - `fact_production` grain — Decision 3.
@@ -1335,3 +1670,8 @@ doing when a second commodity or a rewording forces an edit to the map.
 - Census and USGS landing SQL existing only in Snowsight — exported to
   `sql/03_` and `sql/04_` and committed.
 - `schema.md` diverging from the built objects — reconciled in `docs/schema.md`.
+- BLS PPI STAGING view, `dim_time_monthly`, `fact_price` — Decisions 9–12.
+- Stale "expect 9 rows" comment on `dim_material` in
+  `sql/06_mart_dimensions.sql` corrected to 8.
+- Census STAGING view and `fact_spend` — Decisions 13–15.
+- Census range against `dim_time_monthly` — within range (2016-01 to 2026-06).

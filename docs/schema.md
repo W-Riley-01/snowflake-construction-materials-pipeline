@@ -1,10 +1,10 @@
 # Star Schema Design — Concrete & Cement Materials Market Pipeline
 
 **Stage:** 5 — Transform
-**Status:** Designed at Stage 3; revised at Stage 5 when the USGS slice was
-built. Objects marked **Built** exist in Snowflake and are verified. Objects
+**Status:** Designed at Stage 3; revised at Stage 5 as the USGS, BLS and
+Census slices were built. All three facts are now built. Objects marked **Built** exist in Snowflake and are verified. Objects
 marked **Designed** are not yet built and may change when they are.
-**Last updated:** 2026-09-28
+**Last updated:** 2026-10-02
 
 This is the *what*. `docs/data_sources.md` holds the *why* — every choice below
 traces to a numbered decision there.
@@ -41,14 +41,17 @@ traces to a numbered decision there.
 
 ## Dimension tables
 
-### `dim_time_monthly` — Designed
+### `dim_time_monthly` — Built (`sql/06_mart_dimensions.sql`)
 | Column | Type | Notes |
 |---|---|---|
-| `time_key` | int (PK) | **Year-month as an integer, `YYYYMM`** — e.g. `202403`. Not an opaque surrogate. |
-| `year` | int | Cross-grain correlation column shared with `dim_time_annual` |
-| `month` | int | 1–12 |
+| `time_key` | NUMBER(6,0) (PK) | **Year-month as an integer, `YYYYMM`** — e.g. `202403`. Not an opaque surrogate. |
+| `year` | NUMBER(4,0) | Cross-grain correlation column shared with `dim_time_annual` |
+| `month` | NUMBER(2,0) | 1–12 |
 
-Unknown member `-1`. Built with the BLS slice.
+Rows: `-1` (unknown), then 132 months, 2016-01 through 2026-12. Generated from a
+fixed start date and row count rather than typed as literals — the key is a pure
+function of the date, so a rebuild reproduces it exactly. To extend, raise
+`ROWCOUNT` by 12 per added year. (Stage 5 Decision 12)
 
 ### `dim_time_annual` — Built (`sql/06_mart_dimensions.sql`)
 | Column | Type | Notes |
@@ -129,28 +132,56 @@ row's identity and is enforced by a verification check. (Stage 5 Decision 4)
 Units and additivity are also attached as Snowflake column `COMMENT`s on the
 view, so they are visible in Snowsight without this file.
 
-### `fact_price` (BLS PPI — monthly) — Designed
+### `fact_price` (BLS PPI — monthly) — Built (`sql/09_mart_fact_price.sql`)
+
+**Grain: one row per month per material.** A **view** over
+`STAGING.stg_bls_ppi`: monthly periods only, and where a month appears in more
+than one load, the row from the most recent `loaded_at` wins.
+(Stage 5 Decisions 4, 9, 11)
+
 | Column | Type | Notes |
 |---|---|---|
-| `time_key` | int (FK) | → `dim_time_monthly` (`YYYYMM`) |
-| `material_key` | int (FK) | → `dim_material`, resolved via `series_id` |
-| `source_key` | int (FK) | → `dim_source` (`1`) |
-| `price_index` | decimal | **Non-additive** — an index value |
+| `time_key` | NUMBER (FK) | → `dim_time_monthly` (`YYYYMM`) |
+| `material_key` | NUMBER (FK) | → `dim_material`, resolved via `series_id` |
+| `source_key` | NUMBER (FK) | → `dim_source`. Constant `1` (BLS PPI) by construction |
+| `price_index` | NUMBER(38,6) | **Non-additive** — an index value. NULL only if BLS sent a non-number; check STAGING `value_flag` |
+| `is_preliminary` | BOOLEAN | TRUE for BLS's latest four months, which BLS may revise. (Stage 5 Decision 10) |
 
-Stage 3 specified a `price_key` surrogate. If `fact_price` is built as a view per
-Stage 5 Decision 4, the same reasoning that removed `production_key` applies.
-To be confirmed when built.
+**No `price_key`.** The Stage 3 design gave each fact a surrogate key. For the
+same reason as `production_key`, a view cannot hold one; the grain
+`(time_key, material_key)` is the row's identity, enforced by a verification
+check. (Stage 5 Decision 4)
 
-### `fact_spend` (Census VIP — monthly) — Designed, blocked
+Today: 889 rows (7 series × 127 months, 2016-01 to 2026-07), 28 of them
+preliminary.
+
+### `fact_spend` (Census VIP — monthly) — Built (`sql/11_mart_fact_spend.sql`)
+
+**Grain: one row per month per construction category.** A **view** over
+`STAGING.stg_census_vip`: monthly rows only, and where a month appears in more
+than one load, the row from the most recent `loaded_at` wins.
+(Stage 5 Decisions 4, 9, 11, 13–15)
+
 | Column | Type | Notes |
 |---|---|---|
-| `time_key` | int (FK) | → `dim_time_monthly` (`YYYYMM`) |
-| `source_key` | int (FK) | → `dim_source` (`2`) |
-| `construction_category` | string | Degenerate dimension — Commercial / Manufacturing / Power / Highway and Street |
-| `spend_amount` | decimal | Additive |
+| `time_key` | NUMBER (FK) | → `dim_time_monthly` (`YYYYMM`) |
+| `source_key` | NUMBER (FK) | → `dim_source`. Constant `2` (Census VIP) by construction |
+| `construction_category` | VARCHAR | Degenerate dimension. **Commercial, Manufacturing, Power** today. `Unknown` = a code not in the STAGING map. Derived from `category_code` in STAGING, not read from the label stamped at load. (Stage 5 Decision 13) |
+| `spend_amount` | NUMBER(38,6) | Millions of dollars, **not seasonally adjusted**. **Additive** across months and categories — but see below. |
+| `category_verified` | BOOLEAN | FALSE while the code-to-category mapping is an unverified inference. FALSE on every row today. (Stage 5 Decision 14) |
 
-Blocked on Census `category_code` verification (`data_sources.md` open items).
-`spend_key` subject to the same view-versus-key question as `fact_price`.
+**Not a total.** Highway and Street is not landed, so summing across categories
+gives the spend of three categories, not total construction spending.
+
+**No `spend_key`, no `material_key`.** A view cannot hold a surrogate key
+(Stage 5 Decision 4), and Census spending is by construction type, not material,
+so it cannot join `dim_material`. It meets BLS and USGS through time.
+
+Highway and Street is not landed: its code is the disputed one
+(`data_sources.md` open item 2). Adding it is one line in the STAGING map plus a
+load.
+
+Today: 378 rows (3 categories × 126 months, 2016-01 to 2026-06).
 
 ---
 
@@ -195,12 +226,14 @@ erDiagram
     int material_key FK
     int source_key FK
     decimal price_index
+    boolean is_preliminary
   }
   FACT_SPEND {
     int time_key FK
     int source_key FK
     string construction_category
     decimal spend_amount
+    boolean category_verified
   }
   FACT_PRODUCTION {
     int time_key FK
@@ -233,3 +266,11 @@ erDiagram
 | `fact_production`: eleven named measures replace `production_volume` | The source publishes eleven statistics at one grain with three different additivity rules | Stage 5 D3 |
 | `fact_production` gains `non_value_measure_count` | A NULL measure must not be mistakable for clean data | Stage 5 D8 |
 | `production_key` removed | A view cannot hold a stable surrogate key | Stage 5 D4 |
+| `fact_price` built as a view; no `price_key` | Same reasoning as `production_key` — a view cannot hold a stable surrogate | Stage 5 D4 |
+| `fact_price` gains `is_preliminary` | A preliminary index value and a final one are indistinguishable as numbers | Stage 5 D10 |
+| `fact_price` grain resolves overlapping BLS pulls by latest load | BLS revises recent months, so overlapping pulls are the normal case | Stage 5 D9 |
+| `dim_time_monthly` generated from fixed bounds, not literals | Key is a pure function of the date, so a rebuild is still deterministic | Stage 5 D12 |
+| `fact_spend` built as a view; no `spend_key` | Same reasoning as `production_key` — a view cannot hold a stable surrogate | Stage 5 D4 |
+| `fact_spend` holds three categories, not four | Highway and Street is not landed; its code is the disputed one | Census D1–D2 |
+| `construction_category` derived from `category_code` in STAGING | The label was stamped at load from an inference; the code is what Census sent | Stage 5 D13 |
+| `fact_spend` gains `category_verified` | The code-to-category mapping has not been checked against a source of record | Stage 5 D14 |
