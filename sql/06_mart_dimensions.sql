@@ -3,7 +3,7 @@
 -- Stage 5: Transform -- MART dimension tables
 -- File: sql/06_mart_dimensions.sql
 -- =========================================================
--- What this does, in two sentences: creates and populates the three
+-- What this does, in two sentences: creates and populates the four
 -- shared dimension tables the fact views join against, with every key
 -- value written as an explicit literal so a full rebuild produces
 -- identical keys. Dimensions are TABLES (not views) because a
@@ -37,7 +37,8 @@
 --    -- the usual reason for a surrogate key does not apply. Time
 --    dimensions are the standard exception. Column name stays
 --    `time_key` so the ERD and the fact FK naming stay valid.
---    dim_time_monthly will use YYYYMM on the same principle.
+--    dim_time_monthly uses YYYYMM on the same principle -- added with the
+--    BLS slice (Stage 5 Decision 12).
 --
 -- 3. fact_production is NOT a single `production_volume` column.
 --    Per Stage 5 Decision 3 its grain is one row per year with a
@@ -97,6 +98,49 @@ INSERT INTO MART.dim_time_annual (time_key, year) VALUES
     (2023, 2023),
     (2024, 2024),
     (2025, 2025);
+
+-- =========================================================
+-- dim_time_monthly
+-- =========================================================
+-- Grain: one row per calendar month. time_key IS the year-month as an
+-- integer, YYYYMM (e.g. 202607). Same principle as dim_time_annual: a
+-- calendar month cannot be renamed, reused or retired, so a surrogate
+-- would insulate against nothing.
+--
+-- Covers 2016-01 through 2026-12: the BLS history plus the rest of the
+-- current year, so new monthly pulls land on existing rows. Census VIP
+-- will be checked against this range when fact_spend is built; the
+-- anti-join checks report any month that falls outside it.
+-- To extend: raise ROWCOUNT by 12 for each added year. Nothing else
+-- changes.
+--
+-- Deliberately NOT joined to dim_time_annual. Correlate the two on the
+-- shared `year` column. That keeps it structurally impossible to fan an
+-- annual USGS value out across monthly rows (Stage 3 Decision 1).
+CREATE OR REPLACE TABLE MART.dim_time_monthly (
+    time_key    NUMBER(6,0)  NOT NULL PRIMARY KEY,
+    year        NUMBER(4,0)  NOT NULL,
+    month       NUMBER(2,0)  NOT NULL
+)
+COMMENT = 'Monthly time dimension. time_key holds the year-month as YYYYMM, not a surrogate. Deliberately NOT joined to dim_time_annual -- correlate on the year column instead.';
+
+-- Generated, not hand-typed: 132 literal rows would be noise and a
+-- typo risk, and the key is a pure function of the date, so a rebuild
+-- reproduces it exactly -- the property explicit literals give the
+-- other dimensions (Decision 6). GENERATOR makes 132 empty rows;
+-- ROW_NUMBER() OVER (ORDER BY SEQ4()) numbers them 1..132 with no
+-- gaps (SEQ4 alone can skip numbers); DATEADD walks forward one month
+-- per row from the fixed start date.
+INSERT INTO MART.dim_time_monthly (time_key, year, month)
+SELECT -1, -1, -1                                 -- unknown member
+UNION ALL
+SELECT YEAR(d) * 100 + MONTH(d), YEAR(d), MONTH(d)
+FROM (
+    SELECT DATEADD(month,
+                   ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1,
+                   '2016-01-01'::DATE) AS d
+    FROM TABLE(GENERATOR(ROWCOUNT => 132))
+);
 
 -- =========================================================
 -- dim_material
@@ -190,16 +234,23 @@ INSERT INTO MART.dim_source (source_key, source_name) VALUES
 -- VERIFICATION -- run these after this file
 -- =========================================================
 
--- 1. Row counts. Expect 6 / 9 / 4 (each includes its -1 unknown).
+-- 1. Row counts. Expect 6 / 133 / 8 / 4 (each includes its -1 unknown).
+--    dim_material is 8: the unknown member plus seven materials. An
+--    earlier version of this comment said 9; the INSERT was right and
+--    the comment was wrong.
 -- SELECT 'dim_time_annual' AS table_name, COUNT(*) AS rows FROM MART.dim_time_annual
+-- UNION ALL SELECT 'dim_time_monthly', COUNT(*) FROM MART.dim_time_monthly
 -- UNION ALL SELECT 'dim_material',  COUNT(*) FROM MART.dim_material
 -- UNION ALL SELECT 'dim_source',    COUNT(*) FROM MART.dim_source;
 
--- 2. Key uniqueness. Expect ZERO rows from all three -- Snowflake
+-- 2. Key uniqueness. Expect ZERO rows from all four -- Snowflake
 --    does not enforce the PRIMARY KEY declared above, so this is the
 --    real check.
 -- SELECT 'dim_time_annual' AS table_name, time_key AS key_value, COUNT(*) AS n
 --   FROM MART.dim_time_annual GROUP BY time_key HAVING COUNT(*) > 1
+-- UNION ALL
+-- SELECT 'dim_time_monthly', time_key, COUNT(*)
+--   FROM MART.dim_time_monthly GROUP BY time_key HAVING COUNT(*) > 1
 -- UNION ALL
 -- SELECT 'dim_material', material_key, COUNT(*)
 --   FROM MART.dim_material GROUP BY material_key HAVING COUNT(*) > 1
@@ -207,8 +258,9 @@ INSERT INTO MART.dim_source (source_key, source_name) VALUES
 -- SELECT 'dim_source', source_key, COUNT(*)
 --   FROM MART.dim_source GROUP BY source_key HAVING COUNT(*) > 1;
 
--- 3. Unknown member present in all three. Expect 3 rows.
+-- 3. Unknown member present in all four. Expect 4 rows.
 -- SELECT 'dim_time_annual' AS table_name FROM MART.dim_time_annual WHERE time_key = -1
+-- UNION ALL SELECT 'dim_time_monthly' FROM MART.dim_time_monthly WHERE time_key = -1
 -- UNION ALL SELECT 'dim_material' FROM MART.dim_material WHERE material_key = -1
 -- UNION ALL SELECT 'dim_source'   FROM MART.dim_source   WHERE source_key = -1;
 
@@ -238,3 +290,10 @@ INSERT INTO MART.dim_source (source_key, source_name) VALUES
 --    the value from insertion order and history, so a rebuild can
 --    silently reassign material_key 1 to a different material while
 --    every fact row still points at key 1.
+
+-- 7. dim_time_monthly shape. Expect 132 real months, first 201601,
+--    last 202612, and every month number 1-12 present 11 times.
+-- SELECT COUNT(*) AS months, MIN(time_key) AS first_key, MAX(time_key) AS last_key
+--   FROM MART.dim_time_monthly WHERE time_key > 0;
+-- SELECT month, COUNT(*) AS n
+--   FROM MART.dim_time_monthly WHERE time_key > 0 GROUP BY month ORDER BY month;
