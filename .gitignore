@@ -15,12 +15,16 @@ venv/
 
 # Editor/OS cruft
 .idea/
+.vscode/
 .DS_Store
+Thumbs.db
 .~lock.*
 
-# Personal study notes -- not part of the pipeline
+# Local working notes -- kept on disk, not published
+CLAUDE.md
+learning-guardrails.md
+docs/session_handoff*
+docs/*_additions.md
 interview_study_sheet.md
 data_engineering_study_sheet.md
-
-# OpenDocument files
 *.odt
