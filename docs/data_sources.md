@@ -1,6 +1,6 @@
 # Data Sources — Concrete & Cement Materials Market Pipeline
 
-**Stage:** 5 — Transform (complete)
+**Stage:** 6 — BI layer (Stages 2–5 complete)
 **Status:** All three sources run end to end, RAW → STAGING → MART. What remains
 is verification and documentation; see "Open items carried forward" at the end.
 **Last updated:** 2026-11-17
@@ -1641,6 +1641,57 @@ loads. It runs correctly on one load, which proves only that it does not damage 
 single-load result.
 
 ---
+
+## Stage 6 — BI Layer Decisions
+
+### Decision 1 — Annual comparison built as a MART view, not in Power BI
+
+**Chosen:** `MART.rpt_annual_cement_market` aggregates each fact to calendar
+year on its own, then joins the yearly results on `year` (a drill-across). Power
+BI reads it as a standalone table with no relationships.
+
+**Rejected alternative:** load the facts into Power BI and do the annual
+comparison in DAX, with a year bridge table relating the monthly and annual
+dimensions.
+
+**Why:** the logic sits in version-controlled SQL next to the facts it reads,
+any client gets the same numbers, and the BI layer stays thin. It also keeps the
+rule from Stage 3 Decision 1 in one place: monthly and annual facts never meet
+until each has been reduced to the shared grain. A year bridge inside Power BI
+would let a monthly axis repeat an annual USGS figure twelve times.
+
+**Cost accepted:** one BI-shaped object in MART that must be kept in step when
+a fact view changes. `is_complete_year` is part of the contract: the current
+year is partial on both monthly sources.
+
+### Decision 2 — Power BI connects with a read-only `MART_READER` role
+
+**Chosen:** a role with `USAGE` on the warehouse, database and MART schema, and
+`SELECT` on current and future MART tables and views. Nothing on RAW or STAGING.
+
+**Rejected alternative:** connect with the role that owns the objects.
+
+**Why:** least privilege. The report only reads MART, so a leaked BI credential
+exposes published, public-source data and cannot create, drop or load anything.
+The fact views read STAGING with their owner's privileges, so the role needs
+grants on MART only.
+
+**Cost accepted:** one more role and its grants. Future grants keep new MART
+objects visible without re-granting.
+
+### Decision 3 — Import mode, not DirectQuery
+
+**Chosen:** Power BI imports about 1,400 rows.
+
+**Rejected alternative:** DirectQuery against Snowflake.
+
+**Why:** the sources publish monthly or annually, so a live connection buys
+nothing. Every DirectQuery visual interaction would resume the warehouse and
+spend credits. Import keeps the report fast and the warehouse suspended.
+
+**Cost accepted:** the report is current as of its last refresh. The `.pbix`
+also embeds the account host in its query definitions, so it is not published.
+The model and measures are documented in `dashboard/README.md` instead.
 
 ## Open items carried forward
 

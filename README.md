@@ -8,12 +8,21 @@ recorded with the alternative it beat in [`docs/data_sources.md`](docs/data_sour
 and the layers are deliberately thin enough that each transformation can be
 explained in full.
 
+## Dashboard
+
+A three-page Power BI report reads the MART layer through a read-only role.
+Model, relationships and every DAX measure are in
+[`dashboard/README.md`](dashboard/README.md).
+
+![Market overview](dashboard/screenshots/01_market_overview.png)
+
 ## Repository layout
 
 ```
-sql/        01-11, run in numeric order: RAW landing -> STAGING views -> MART
+sql/        01-12, run in numeric order: RAW landing -> STAGING views -> MART -> reporting
 scripts/    fetch_*.py pull each source; upload_to_snowflake.py runs PUT + COPY INTO
             census_code_investigation/ holds one-off scripts used to infer Census codes
+dashboard/  Power BI report: screenshots, PDF export, model and DAX documentation
 docs/       data_sources.md  decision log: every choice, the alternative it beat, the cost
             schema.md        column-level model and ERD
             project-plan.md  the original plan, kept as written to show what changed
@@ -197,6 +206,12 @@ sql/11_mart_fact_spend.sql             MART fact view for Census construction sp
 `scripts/census_code_investigation/` holds one-off scripts used to infer the
 Census category codes empirically; they are not part of the pipeline.
 
+### 4. Reporting layer
+
+Run `sql/12_mart_reporting.sql`. It creates `MART.rpt_annual_cement_market`,
+an annual drill-across of all three sources, and the read-only `MART_READER`
+role the Power BI report connects with (Stage 6 Decisions 1–3).
+
 ## Key decisions
 
 Full reasoning, with the rejected alternative for each, is in
@@ -222,6 +237,10 @@ Full reasoning, with the rejected alternative for each, is in
   code is what Census sent; the label is our interpretation of it, and an
   interpretation stored in RAW can only be fixed by re-fetching. (Stage 5
   Decision 13, with `category_verified` in Decisions 14 and 17)
+- **Cross-source comparison as a drill-across view** — each fact is reduced to
+  calendar year on its own before the results are joined, so an annual USGS
+  figure can never be repeated across monthly rows. Power BI reads the result
+  as a standalone table. (Stage 6 Decision 1)
 - **All tables permanent** — transient tables skip Fail-safe and suit short-lived
   work tables; this project has none (STAGING is views) and the data is about
   3 MB. (Stage 5 Decision 16)
@@ -301,8 +320,9 @@ These were in the original plan and are deliberately left for a later pass:
 - **Role separation across RAW, STAGING and MART.** Every object is currently
   owned by `ACCOUNTADMIN`. That is acceptable on a single-user trial account and
   wrong anywhere else. The next step is a dedicated owner role for the pipeline,
-  plus a read role per layer, so a BI user can read MART without touching RAW.
-  The only scoped role today is a read-only verification role
+  plus a read role per layer. The first of those exists: `MART_READER`, which the
+  Power BI report uses, can read MART and nothing else (Stage 6 Decision 2).
+  The other scoped role is a read-only verification role
   (`docs/data_sources.md`, open item 4).
 
 ## How this was built

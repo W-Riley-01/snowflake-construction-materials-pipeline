@@ -28,3 +28,12 @@ docs/*_additions.md
 interview_study_sheet.md
 data_engineering_study_sheet.md
 *.odt
+
+# Power BI report file embeds the account host -- documented, not published
+*.pbix
+*.pbit
+
+# Key-pair auth material -- keep outside the repo; ignored here as a backstop
+*.p8
+*.pem
+rsa_key*
