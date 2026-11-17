@@ -8,6 +8,18 @@ recorded with the alternative it beat in [`docs/data_sources.md`](docs/data_sour
 and the layers are deliberately thin enough that each transformation can be
 explained in full.
 
+## Repository layout
+
+```
+sql/        01-11, run in numeric order: RAW landing -> STAGING views -> MART
+scripts/    fetch_*.py pull each source; upload_to_snowflake.py runs PUT + COPY INTO
+            census_code_investigation/ holds one-off scripts used to infer Census codes
+docs/       data_sources.md  decision log: every choice, the alternative it beat, the cost
+            schema.md        column-level model and ERD
+            project-plan.md  the original plan, kept as written to show what changed
+data/       gitignored; fetched files land here
+```
+
 ## Architecture
 
 ```
@@ -250,7 +262,7 @@ here:
 - **No value has been compared by hand at bls.gov or census.gov.** Publisher
   verification is partly done via FRED's republication only: one of seven BLS
   series and the three Census categories. The other six BLS series and the USGS
-  figures have not been compared against any outside source (open item 8).
+  figures have not been compared against any outside source (open item 5).
 - **Census categories are verified at the value level only.** All three landed
   categories match FRED's republication of the Census series in every settled
   month, and `category_verified` is `TRUE` on that basis (Stage 5 Decision 17).
@@ -270,17 +282,36 @@ here:
   matches the file ScienceBase currently lists, and its metadata date is
   2026-02-06. The data release page shows September 18, 2026, and what that date
   means is not known. Closing this means comparing the SHA-256 of a fresh
-  download against the loaded file (open item 9).
+  download against the loaded file (open item 6).
 - **`fact_price` precedence is untested on overlapping loads.** It runs correctly
   on a single load, which proves only that it does not damage a single-load
   result (known debt, Stage 5).
 - **`dim_time_monthly` covers 2016-01 to 2026-12 via a hard-coded `ROWCOUNT`**
   that needs raising by 12 each year (known debt, Stage 5).
-- **BLS Stage 4 Decisions 1–3 are reconstructions** from the committed SQL; the
-  original reasoning was never saved (open item 3).
 - **A `CASE` expression is duplicated** across a view and two commented
   diagnostics in `sql/05_staging_usgs_mcs_cement.sql`, and the `statistic_map`
   list exists twice in `sql/07_mart_fact_production.sql` (known debt, Stage 5).
+
+## Not built yet
+
+These were in the original plan and are deliberately left for a later pass:
+
+- **Scheduled incremental refresh with Streams and Tasks.** Every load today is
+  run by hand, which suits three sources that publish monthly or annually.
+- **Role separation across RAW, STAGING and MART.** Every object is currently
+  owned by `ACCOUNTADMIN`. That is acceptable on a single-user trial account and
+  wrong anywhere else. The next step is a dedicated owner role for the pipeline,
+  plus a read role per layer, so a BI user can read MART without touching RAW.
+  The only scoped role today is a read-only verification role
+  (`docs/data_sources.md`, open item 4).
+
+## How this was built
+
+I used Claude as a pair-programmer and tutor throughout. It explained Snowflake
+concepts, drafted SQL and scripts for me to review, and ran read-only
+verification queries through the scoped role above. The design decisions, the
+alternatives rejected, and the verification calls are mine. Each one is logged
+with its reasoning in [`docs/data_sources.md`](docs/data_sources.md).
 
 ## What I learned
 

@@ -1,5 +1,13 @@
 # Concrete & Cement Materials Market Pipeline — Project Plan
 
+> **This is the original plan, written in August 2026 before any data was
+> inspected.** It is kept as written so the changes are visible. Several
+> assumptions did not survive contact with the sources. USGS turned out to be
+> national-only, so `dim_region` was dropped. The single fact table became three
+> fact tables at their native grains. Filtering at ingest was reversed to
+> landing full files and filtering downstream. Each reversal is logged with its
+> reasoning in [`data_sources.md`](data_sources.md).
+
 **Goal:** Build a SQL/Snowflake-heavy data integration project that mirrors real materials-industry data work — multiple public sources, different formats and time grains, reconciled into a clean warehouse. Purpose: a portfolio project showcasing integration architecture, data mapping, and monitoring — not a dashboard-first project.
 
 **One-sentence architecture summary:**

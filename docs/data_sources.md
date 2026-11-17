@@ -1,9 +1,9 @@
 # Data Sources — Concrete & Cement Materials Market Pipeline
 
-**Stage:** 5 — Transform (in progress)
-**Status:** Stages 2–4 complete for all three sources. USGS complete end to end
-through MART. BLS and Census not yet transformed.
-**Last updated:** 2026-09-28
+**Stage:** 5 — Transform (complete)
+**Status:** All three sources run end to end, RAW → STAGING → MART. What remains
+is verification and documentation; see "Open items carried forward" at the end.
+**Last updated:** 2026-11-17
 
 This document captures exact access method, identifiers, and cadence for each of
 the three sources feeding the pipeline. It is the integration documentation
@@ -315,21 +315,13 @@ Acceptable now given the fixed, small, stable set.
 
 ## Stage 4 — Prototype Decisions
 
-> **Provenance of this section.** Entries are numbered per source (BLS, Census,
-> USGS) rather than globally, so no renumbering is needed as sources are added.
->
-> - **Census Decisions 1–4** — recovered from the 2026-08-31 session record,
->   including William's stated reasoning at each choice point.
-> - **BLS Decision 4** — recovered from the 2026-08-30 session handoff.
-> - **BLS Decisions 1–3** — **RECONSTRUCTED, NOT RECOVERED.** The original entries
->   were written into a revision of this file that was never committed or
->   uploaded, and the session is not in searchable history. The text below is
->   rebuilt from what `02_raw_bls_ppi_landing.sql` itself states. Each is marked.
->   **William to confirm or amend the reasoning** before these are relied on as
->   interview material.
+> Entries are numbered per source (BLS, Census, USGS) rather than globally, so
+> no renumbering is needed as sources are added. BLS Decisions 1–3 were written
+> up after the fact from `02_raw_bls_ppi_landing.sql`; the original notes were
+> not kept.
 
 ### BLS Decision 1 — Land raw JSON into a single `VARIANT` column
-*Reconstructed from `02_raw_bls_ppi_landing.sql`. Confirm.*
+*Written retrospectively from `02_raw_bls_ppi_landing.sql`.*
 
 **Chosen:** `RAW.BLS_PPI_RAW` holds one `VARIANT` column (`raw_data`) plus
 `loaded_at`. Each JSON record lands untouched.
@@ -349,7 +341,7 @@ TEXT columns (USGS Decision 2).
 the data. That work lands in the BLS STAGING view.
 
 ### BLS Decision 2 — One named internal stage per source
-*Reconstructed from `02_raw_bls_ppi_landing.sql`. Confirm.*
+*Written retrospectively from `02_raw_bls_ppi_landing.sql`.*
 
 **Chosen:** `RAW.BLS_PPI_STAGE` is dedicated to BLS. Census and USGS each get
 their own stage.
@@ -363,9 +355,7 @@ principle of isolating each source so a failure is attributable.
 **Cost accepted:** one additional Snowflake object per source.
 
 ### BLS Decision 3 — API key held in local `.env`, not a Snowflake `SECRET`
-*Reconstructed. The change of approach is documented fact; the reasoning below
-is the technically correct explanation, but whether it was the reasoning at the
-time is unconfirmed. Confirm.*
+*Written retrospectively.*
 
 **Chosen:** `BLS_API_KEY` (and later `CENSUS_API_KEY`) is stored in a gitignored
 `.env` and read by the fetch script through `python-dotenv`. `.env.example`
@@ -386,8 +376,6 @@ filesystem hygiene rather than Snowflake's access controls. Verified: `git
 check-ignore -v .env` matches `.gitignore:2`; `.env.example` is not ignored.
 
 ### BLS Decision 4 — Upload via local `PUT` + `COPY INTO`, not Snowsight's Load Data wizard
-*Recovered from the 2026-08-30 handoff.*
-
 **Chosen:** A local Python script (`snowflake-connector-python`) runs `PUT` to
 place the fetched file in `RAW.BLS_PPI_STAGE`, then `COPY INTO` to load it.
 
@@ -413,8 +401,6 @@ was replaced by a generalized one.
 **Verified:** 7 rows in `RAW.BLS_PPI_RAW`, real JSON, real `loaded_at` timestamps.
 
 ### Census Decision 1 — `category_code` values resolved empirically
-*Recovered from the 2026-08-31 session record.*
-
 **Background:** VIP's `/variables.html` metadata endpoint does not enumerate
 `category_code`'s valid values — confirmed at Stage 2 and again at Stage 4 by
 checking the same endpoint pattern across several sibling EITS datasets, none of
@@ -456,7 +442,7 @@ Rejected because every remaining candidate would have been selected the same way
 the wrong ones were — by magnitude proximity — repeating the exact error the
 method existed to avoid.
 
-William's call at the time: this is a project rather than a live production
+The call at the time: this is a project rather than a live production
 database, the problem is identified, so use what is confirmed, send an inquiry,
 and move forward.
 
@@ -492,8 +478,6 @@ Power `11XX` — are not directly named in the reply. Verification against the
 zipped dataset is still required before relying on any of them. See Open Items #1.
 
 ### Census Decision 2 — Build landing objects now; ingest incrementally
-*Recovered from the 2026-08-31 session record.*
-
 **Chosen:** create `RAW.CENSUS_VIP_STAGE` and `RAW.CENSUS_VIP_RAW` immediately.
 Fetch and load the three confirmed categories now; load Highway and Street as a
 second, incremental load once its code is confirmed.
@@ -501,8 +485,8 @@ second, incremental load once its code is confirmed.
 **Rejected alternative:** wait until all four category codes are confirmed before
 creating any landing objects.
 
-**How the decision was reached:** William's first instinct was to wait, then
-noted the ingestion itself could happen later. Those turned out to be two separate
+**How the decision was reached:** my first instinct was to wait, until I noticed
+the ingestion itself could happen later. Those turned out to be two separate
 decisions. The landing objects make no claims about content — a `VARIANT` table
 accepts three categories or forty without structural change. The category codes
 only matter in the **fetch script**, where specific values must be named. So the
@@ -517,15 +501,13 @@ Commercial, Power, and Manufacturing (about 10.5 years, matching the
 `current_year - 10` fetch window).
 
 ### Census Decision 3 — Share `RAW.JSON_FORMAT` across JSON sources
-*Recovered from the 2026-08-31 session record.*
-
 **Chosen:** `RAW.JSON_FORMAT` (created for BLS) is reused for Census rather than
 creating a separate `RAW.CENSUS_JSON_FORMAT`.
 
 **Rejected alternative:** a dedicated file format per source, matching the
 dedicated-stage and dedicated-table pattern.
 
-**Why — William's reasoning:** a file format governs *parsing behaviour* — how to
+**Why:** a file format governs *parsing behaviour* — how to
 read bytes into rows — not source data. It never interacts with any source's
 data, so sharing it does not violate Stage 3 Decision 2's source-isolation
 principle, which exists to keep different sources' *data* from mixing. Shared
@@ -540,8 +522,6 @@ prevent it.
 named by file *shape*, not by source.
 
 ### Census Decision 4 — One generalized upload script, not one per source
-*Recovered from the 2026-08-31 session record.*
-
 **Chosen:** `upload_to_snowflake.py` takes the source name as an argument and
 looks up that source's data directory, stage, and table from a small config map.
 Replaces `upload_bls_to_snowflake.py`.
@@ -550,8 +530,8 @@ Replaces `upload_bls_to_snowflake.py`.
 with three constants swapped, matching the existing per-source `fetch_*.py`
 pattern.
 
-**Why — William's reasoning:** "I don't want the need for a fourth near-duplicate
-file." The script was almost entirely generic — connect, `PUT`, `COPY INTO`,
+**Why:** I didn't want a fourth near-duplicate
+file. The script was almost entirely generic — connect, `PUT`, `COPY INTO`,
 count. Only `DATA_DIR`, `STAGE`, and `TABLE` differed between sources.
 
 **Cost accepted:** one script now carries a source-config map, so a source with
@@ -1030,7 +1010,7 @@ were flawed. Reading the eleven statistics for one year settled it:
   Keeps everything, but puts additive and non-additive numbers in one column.
   An unfiltered `SUM(measure_value)` adds tons to dollars to percentages.
 
-**Why, in William's words (refined):** C keeps every statistic USGS published
+**Why:** C keeps every statistic USGS published
 available in the MART, each in a column with a single unit and a single
 additivity rule, so the price and consumption measures the cross-source analysis
 depends on are reachable — and because RAW and STAGING retain the full file,
@@ -1090,7 +1070,7 @@ currently resolves to Cement.
 **Rejected alternative:** omit it. The table is cement-only, so a key that never
 varies filters nothing.
 
-**Why, in William's words (refined):** `dim_material` is a **conformed
+**Why:** `dim_material` is a **conformed
 dimension**, shared with `fact_price`. The key is what makes BLS cement price and
 USGS cement production comparable *in the model* rather than by convention.
 Without it, joining the two means matching on year and trusting both sides are
@@ -1132,7 +1112,7 @@ calendar year itself.
   history. A rebuild in a different order can reassign keys.
 - **A `SEQUENCE`.** Same order-dependence, and it keeps climbing across rebuilds.
 
-**Why, in William's words (refined):** key values live in version-controlled
+**Why:** key values live in version-controlled
 SQL, so rebuilding the MART from scratch produces identical keys. The danger
 with generated keys is not that a rebuild fails — it is that a rebuild
 *succeeds* and every fact row's foreign key now points at a different dimension
@@ -1225,7 +1205,7 @@ measures in that row whose source value was not a plain number.
 - **A flag column per measure.** Complete, but eleven more columns doubling the
   table's width.
 
-**Why, in William's words:** it gives a clear view of the data and a NULL cannot
+**Why:** it gives a clear view of the data and a NULL cannot
 be mistaken for clean data. Zero means every measure in the row is a real
 number. Anything else means check `STAGING.STG_USGS_MCS_CEMENT.value_flag`
 before trusting a NULL in that row.
@@ -1692,33 +1672,24 @@ single-load result.
    the check against Census's zipped dataset, which would be the authoritative
    answer.
 
-3. **BLS Stage 4 Decisions 1–3 are reconstructions — CONFIRM.** Rebuilt from the
-   committed SQL because the original text was never saved. BLS Decision 3
-   especially: in your own words, why `.env` rather than a Snowflake `SECRET`,
-   and what would a `SECRET` have required?
-
-4. **Stage 5 transform layer — complete (2026-10-02).** USGS, BLS and Census each
+3. **Stage 5 transform layer — complete (2026-10-02).** USGS, BLS and Census each
    have a STAGING view and a MART fact view; four dimensions are built. Remaining
    work is verification and documentation, not construction.
 
-6. **Stale copies in the project knowledge base.** `fetch_bls_ppi.py` there still
-   has the relative-path bug fixed in the repo; the August 30 handoff files and
-   the deleted `upload_bls_to_snowflake.py` are superseded. The repo is now the
-   source of truth.
-
-7. **Snowflake MCP access for Claude — scoped role.** `CLAUDE_MCP_ROLE` is
+4. **Read-only verification role for the AI assistant.** `CLAUDE_MCP_ROLE` is
    read-only: `USAGE` on the database and the `STAGING`, `MART`, `PUBLIC` and
    `RAW` schemas, `SELECT` on `RAW.BLS_PPI_RAW`, and `SELECT` on future views in
    `STAGING` and future tables and views in `MART`. It has no create or write
-   privileges, so it can verify objects but not deploy them. Widen `RAW` access
+   privileges, so the assistant can verify objects but every deployment runs
+   under my own role. Widen `RAW` access
    one table at a time as each source is built (`CENSUS_VIP_RAW` next).
 
-8. **Publisher verification — partly done.** BLS `WPU1322` and all three Census
+5. **Publisher verification — partly done.** BLS `WPU1322` and all three Census
    categories were compared against FRED's republication (see "independent spot
    checks"). Remaining: the other six BLS series, USGS against the MCS 2026
    report, and direct comparison at bls.gov and census.gov.
 
-9. **USGS file — likely unchanged, unconfirmed.** `MCS2026_Commodities_Data.csv`
+6. **USGS file — likely unchanged, unconfirmed.** `MCS2026_Commodities_Data.csv`
    was loaded 2026-09-08. Its size, 3.04 MiB, matches the file ScienceBase
    currently lists, and its metadata date is 2026-02-06. The USGS data release
    page shows September 18, 2026; what that date means is **not known**. Closed
