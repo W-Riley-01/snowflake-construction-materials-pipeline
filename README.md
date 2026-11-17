@@ -339,7 +339,9 @@ with its reasoning in [`docs/data_sources.md`](docs/data_sources.md).
 
 ## What I learned
 
-> **TODO — to be written by the project author.** Left deliberately blank. This
-> section is the "explain it back cold" artifact: write it without looking at the
-> code, then check it against `docs/data_sources.md`. Anything you cannot explain
-> is the part to revisit, not to paper over.
+I learned a lot about the entire process, and that was the goal: taking
+information from different sources in different formats and fitting it together
+in Snowflake. A number of decisions had to be thought through clearly rather
+than rushed, because there are places where data can fail quietly, without
+anyone noticing. The biggest takeaway is that the way a pipeline is built has a
+trickle-down effect on what the data produces.
