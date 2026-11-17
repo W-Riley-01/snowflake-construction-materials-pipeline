@@ -258,7 +258,7 @@ here:
   reply contradicts the inferred mapping for codes that are not landed, and the
   zipped VIP dataset remains the tiebreaker (open item 2, Census Decision 1).
 - **`fact_spend` covers 3 of 4 categories and is not a total.** Highway and
-  Street is not landed, pending resolution of its code (open items 2 and 4).
+  Street is not landed, pending resolution of its code (open item 2).
 - **USGS release precedence is descoped.** RAW appends each annual release and
   releases overlap on four years, so a second load would put two rows in STAGING
   per year and statistic, and `fact_production` would silently take `MAX` across

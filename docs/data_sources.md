@@ -1416,6 +1416,89 @@ by code rather than the derived name so a map edit cannot merge or split groups.
 Decision 9: `loaded_at` orders loads, not publications, and the rule has run on a
 single load only.
 
+### Decision 16 — Table storage class: permanent throughout
+
+**Chosen:** every table stays permanent, which is Snowflake's default. No
+transient or temporary tables.
+
+**Rejected alternatives:**
+- **Transient RAW tables.** Lower storage cost, but no Fail-safe period and at most
+  one day of Time Travel.
+- **Transient dimension tables.** Defensible because they rebuild from committed
+  SQL, but the saving is nil at this size.
+
+**Why:** Snowflake's guidance is that long-lived tables should be permanent and
+that transient tables suit short-lived work tables such as ETL staging. This
+project has no such tables — STAGING is views. The data is about 3 MB, so the
+cost difference is negligible. RAW can only be rebuilt by re-fetching from
+publishers who revise or replace their files.
+
+**Cost accepted:** Fail-safe storage on tiny tables. Negligible.
+
+### Decision 17 — `category_verified` standard; amends Decision 14
+
+**Chosen:** a Census category's `category_verified` flag is TRUE when (a) every
+settled month of its values is identical to an independent republication of the
+Census series, and (b) the unit is confirmed. Flags default to FALSE. The flag
+lives in the `category_map` in `sql/10_staging_census_vip.sql`.
+
+**Applied 2026-10-02** to all three landed categories, against FRED's
+republication of Census construction spending (Total, not seasonally adjusted,
+millions of dollars): Commercial `TLCOMCON`, Power `TLPWRCON`, Manufacturing
+`TLMFGCON`. Yearly sums for 2016–2025 and the sum for January–April 2026 are
+identical for all three, so 124 of 126 months match in each. The only differences
+are May and June 2026, the two newest months at pull time:
+
+| Category | May + June 2026, ours | May + June 2026, FRED now |
+|---|---|---|
+| Commercial | 10,336 + 10,460 | 10,425 + 10,568 |
+| Power | 29,826 combined | 30,296 combined |
+| Manufacturing | 29,188 combined | 28,976 combined |
+
+The differences run in both directions, consistent with Census revising recent
+months. The cause was not confirmed against a vintage archive.
+
+**Rejected alternatives:**
+- **Wait for the Census zipped dataset.** It remains the stricter check and is
+  still open for the disputed codes (`02XX`, `12XX`), which are not landed.
+- **Leave every flag FALSE.** Would leave a completed check unrecorded and the
+  flag meaningless.
+- **Rely on the magnitude-and-swing method alone.** That is what Census Decision 1
+  did, and its own log called it confidence in a method.
+
+**Why:** a month-for-month match over ten years is far stronger evidence than the
+two-month cross-reference in Census Decision 1, and FRED republishes Census
+series under Census's own category names and units.
+
+**Limits, stated so they travel with the flag:** FRED is a secondary source. The
+check does not address `02XX` or `12XX`. It is not the authoritative code table.
+`TRUE` therefore means "verified at the value level against a secondary
+source", not "authoritative". The Public and Private variants of each series
+carry different numbers; only the Total series were used.
+
+**Cost accepted:** a flag whose meaning needs this paragraph.
+
+### Decision 18 — USGS release precedence: descoped
+
+**Chosen:** no second USGS release will be loaded for this project, so a
+precedence rule is not built. The duplicate check (verification check 5 in
+`sql/07_mart_fact_production.sql`) stays as the guard, and the limitation is
+stated in the README.
+
+**Rejected alternative:** build the rule now. It cannot be tested without a second
+release to run it against.
+
+**Why:** this project is a bounded portfolio piece built on one release of one
+cement table. Building an untestable rule would add code that has never run.
+
+**What would be built:** latest release wins per year and statistic, ordered by
+the release year in the published filename; `fact_production` would replace
+`MAX` with `ROW_NUMBER`, as `fact_price` does (Decision 9).
+
+**Cost accepted:** if a second release were loaded, `fact_production` would take
+`MAX` across releases until check 5 was run. The guard reports the duplicate; it
+does not prevent it.
+
 ### Verification performed (Stage 5 — USGS)
 
 | Check | Expected | Result |
@@ -1532,18 +1615,20 @@ bls.gov and census.gov is still a manual step.
 | BLS `WPU1322` identity and units | FRED lists it as "Cement, Hydraulic", Index 1982=100, not seasonally adjusted — consistent with `dim_material` (Cement) |
 | BLS `WPU1322` values, 14 months across 2016–2026 | **12 of 14 identical to the thousandth.** The two differences are June and July 2026 (ours 357.838 and 357.489; FRED now 357.572 and 355.665). Both are preliminary (`is_preliminary = TRUE`) in our data. Consistent with BLS revising preliminary values; the cause was **not** confirmed against a vintage archive (ALFRED) |
 | Census Commercial (`03XX`) vs. FRED `TLCOMCON`, all 126 months | **124 of 126 identical.** Differences: May 2026 (ours 10,336; FRED 10,425) and June 2026 (ours 10,460; FRED 10,568) — the two most recent months at pull time. Yearly sums for 2016–2025 and January–April 2026 are identical |
+| Census Power (`11XX`) vs. FRED `TLPWRCON`, all 126 months | **124 of 126 identical.** Yearly sums for 2016–2025 and Jan–Apr 2026 identical. Differences: May and June 2026 (ours 29,826 combined; FRED now 30,296) |
+| Census Manufacturing (`20IX`) vs. FRED `TLMFGCON`, all 126 months | **124 of 126 identical.** Yearly sums for 2016–2025 and Jan–Apr 2026 identical. Differences: May and June 2026 (ours 29,188 combined; FRED now 28,976) |
 | Census unit | FRED lists the series in Millions of Dollars, not seasonally adjusted — confirms the assumed unit for the Commercial series |
 
-**What this does and does not establish.** It is strong value-level evidence that
-`03XX` is Commercial total construction spending, unadjusted, in millions of
-dollars — far stronger than the two-month cross-reference in Census Decision 1.
-It does not address `02XX` or `12XX` (not landed), and it is not the authoritative
-code table. `category_verified` is **unchanged (all FALSE)**; whether a
-republication by FRED is enough to flip a flag is a decision still to be made.
+**What this does and does not establish.** It is strong value-level evidence
+that `03XX`, `11XX` and `20IX` are Commercial, Power and Manufacturing total
+construction spending, unadjusted, in millions of dollars — far stronger than
+the two-month cross-reference in Census Decision 1. It does not address `02XX`
+or `12XX` (not landed), and it is not the authoritative code table. Under
+Decision 17 all three `category_verified` flags are TRUE.
 
-**Not yet done:** the other six BLS series; Census Power (`11XX`) and
-Manufacturing (`20IX`); USGS cement against the MCS 2026 report; any direct
-comparison at bls.gov or census.gov.
+**Not yet done:** the other six BLS series; USGS cement against the MCS 2026
+report; any direct comparison at bls.gov or census.gov; the Census zipped
+dataset for the disputed codes.
 
 **Method note for next time.** Compare settled months first. A recent month can
 legitimately differ because the publisher revised it after the pull, and the
@@ -1579,20 +1664,9 @@ single-load result.
 
 ## Open items carried forward
 
-1. **USGS release precedence — must be decided before a second release is
-   loaded (next USGS release expected ~February 2027).** USGS Decision 4 set RAW
-   to *append* each annual release. Each release covers five years, so the 2027
-   release (2022–2026) will overlap the 2026 release (2021–2025) on four years,
-   and USGS revises prior-year figures in later releases. STAGING will then hold
-   two rows for each overlapping year and statistic, and `MAX` in the
-   `fact_production` pivot will silently pick the larger — one row mixing figures
-   from two releases, no error. Stage 4 recorded the *append* but not the
-   *precedence rule* append requires. Almost certainly "latest release wins," but
-   that needs a reliable ordering, and `source_file` names are not yet consistent
-   (the 2026 file was staged under its published name; the fetch script
-   timestamps future files). **Guard until decided:** verification check 5 in
-   `sql/07_mart_fact_production.sql` fails the moment a duplicate appears. Run it
-   after every USGS load.
+1. **USGS release precedence — descoped (Decision 18).** No second release will
+   be loaded for this project. Guard: verification check 5 in
+   `sql/07_mart_fact_production.sql` fails the moment a duplicate appears.
 
 2. **Census `category_code` verification — OPEN, deliberately descoped.**
    Census's Economic Indicator Division indicated `02XX` is Office and `12XX` is
@@ -1612,6 +1686,12 @@ single-load result.
    `03XX`; it does not address `02XX`/`12XX`, which are not landed. Flags left
    FALSE pending a decision on whether this suffices.
 
+   *2026-10-02, Decision 17:* the three landed categories are verified at the
+   value level against a republication of the Census series, and their flags are
+   TRUE. **Still open:** the disputed codes `02XX` and `12XX` (not landed) and
+   the check against Census's zipped dataset, which would be the authoritative
+   answer.
+
 3. **BLS Stage 4 Decisions 1–3 are reconstructions — CONFIRM.** Rebuilt from the
    committed SQL because the original text was never saved. BLS Decision 3
    especially: in your own words, why `.env` rather than a Snowflake `SECRET`,
@@ -1620,22 +1700,6 @@ single-load result.
 4. **Stage 5 transform layer — complete (2026-10-02).** USGS, BLS and Census each
    have a STAGING view and a MART fact view; four dimensions are built. Remaining
    work is verification and documentation, not construction.
-
-5. **Transient vs. permanent tables — still undecided** for RAW and for the MART
-   dimension tables. Both are reproducible from source — RAW from public files,
-   the dimensions from committed literals — which is the usual argument for
-   transient (no Fail-safe, lower storage cost). The dimensions were created
-   permanent by default, and that default is noted in
-   `sql/06_mart_dimensions.sql` as a decision not yet taken.
-
-   *Snowflake's documentation
-   advises permanent tables for long-lived data and positions transient tables for
-   transitory work tables such as ETL staging, because transient tables have no
-   Fail-safe period and at most one day of Time Travel. This project has no
-   transitory work tables (STAGING is views), the data is about 3 MB so the storage
-   saving is negligible, and RAW can only be rebuilt by re-fetching from publishers
-   who revise or replace files. Recommended outcome: leave every table permanent and
-   record that as the decision. Still undecided until confirmed.*
 
 6. **Stale copies in the project knowledge base.** `fetch_bls_ppi.py` there still
    has the relative-path bug fixed in the repo; the August 30 handoff files and
@@ -1649,22 +1713,21 @@ single-load result.
    privileges, so it can verify objects but not deploy them. Widen `RAW` access
    one table at a time as each source is built (`CENSUS_VIP_RAW` next).
 
-8. **Publisher verification — partly done (2026-10-02).** BLS `WPU1322` and Census
-   Commercial were compared against FRED's republication (see "independent spot
-   checks"): 12 of 14 and 124 of 126 months identical, with the differences in
-   preliminary or most-recent months. Remaining: the other six BLS series, Census
-   Power and Manufacturing, USGS against the MCS 2026 report, and direct
-   comparison at the publishers' own sites.
+8. **Publisher verification — partly done.** BLS `WPU1322` and all three Census
+   categories were compared against FRED's republication (see "independent spot
+   checks"). Remaining: the other six BLS series, USGS against the MCS 2026
+   report, and direct comparison at bls.gov and census.gov.
 
-9. **USGS file may have changed after it was loaded.** `MCS2026_Commodities_Data.csv`
-   was loaded 2026-09-08. The USGS data release page currently shows a date of
-   September 18, 2026, and the MCS 2026 report itself exists as version 1.0
-   (February) and version 1.1 (March). What that date means is **not known** — it
-   may be a page update, not a file change. Check the file's modified date or
-   version on ScienceBase against the file loaded. If it did change, this is the
-   first real test of release precedence (item 1).
+9. **USGS file — likely unchanged, unconfirmed.** `MCS2026_Commodities_Data.csv`
+   was loaded 2026-09-08. Its size, 3.04 MiB, matches the file ScienceBase
+   currently lists, and its metadata date is 2026-02-06. The USGS data release
+   page shows September 18, 2026; what that date means is **not known**. Closed
+   by comparing the SHA-256 of a fresh download against the loaded file. If the
+   file differs, load nothing until the difference is understood — a changed
+   file under the same name would be silently skipped by `COPY INTO`.
 
 **Resolved since the last revision:**
+- Table storage class — permanent throughout (Decision 16).
 - `fact_production` grain — Decision 3.
 - Surrogate key generation strategy — Decision 6.
 - Census and USGS landing SQL existing only in Snowsight — exported to

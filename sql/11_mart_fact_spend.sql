@@ -9,7 +9,7 @@
 -- dim_time_monthly. It is a VIEW (Stage 5 Decision 4, hybrid storage),
 -- so it is always current with STAGING and never needs rebuilding.
 --
--- Decision log: docs/data_sources.md, Stage 5 Decisions 13-15.
+-- Decision log: docs/data_sources.md, Stage 5 Decisions 13-15 and 17.
 -- Depends on: sql/10_staging_census_vip.sql  (STAGING view)
 --             sql/06_mart_dimensions.sql     (must run FIRST)
 --
@@ -30,9 +30,9 @@
 --    (time_key, construction_category) is the row's identity and
 --    verification check 2 enforces it.
 --
--- 2. Adds `category_verified` (Stage 5 Decision 14). The mapping from
---    Census category code to category name has not been checked
---    against a source of record, and the status travels with each row.
+-- 2. Adds `category_verified` (Stage 5 Decisions 14 and 17). Whether the
+--    mapping from Census category code to category name has been
+--    checked travels with each row.
 --
 -- 3. Three categories, not four. Highway and Street is not landed
 --    (Census Decisions 1-2).
@@ -47,7 +47,7 @@ CREATE OR REPLACE VIEW MART.fact_spend (
     source_key            COMMENT 'FK -> dim_source. Constant 2 (Census VIP) by construction -- this view reads only Census.',
     construction_category COMMENT 'Degenerate dimension (Stage 3 Decision 4). Commercial, Power or Manufacturing today. Unknown = a Census category code not in the STAGING map. Highway and Street is NOT yet landed.',
     spend_amount          COMMENT 'Construction spending in millions of dollars, NOT seasonally adjusted. ADDITIVE across months and across categories -- but the categories loaded are only three of four, so a sum across categories is NOT total construction spending. Never add to price_index.',
-    category_verified     COMMENT 'FALSE while the Census category code behind construction_category is an unverified inference (data_sources.md open item 2). Do not treat an unverified category label as a source of record.'
+    category_verified     COMMENT 'TRUE when the category values were checked against an independent republication of the Census series (value-level check, 2026-10-02; not the authoritative Census code table). FALSE for any category not so checked. Stage 5 Decisions 14 and 17.'
 )
 COMMENT = 'Census VIP construction spend, one row per month per category, latest load wins. Monthly, not seasonally adjusted. Three of four planned categories loaded. Built over STAGING.stg_census_vip.'
 AS
@@ -124,12 +124,13 @@ LEFT JOIN MART.dim_time_monthly t
 --    a newer one would make the older values win. Check 5 shows months
 --    covered by more than one load.
 --
--- 2. Unverified categories. Every row carries category_verified =
---    FALSE. Verification means checking each code against the Census
---    zipped VIP dataset, then flipping the flag in the STAGING map.
+-- 2. Verification is value-level only. The three landed categories carry
+--    category_verified = TRUE because each matched an independent
+--    republication of the Census series in every settled month
+--    (2026-10-02). That is not the authoritative Census code table.
 --    The disputed codes (02XX, 12XX) are not landed, so no row in this
---    view depends on the contradicted mapping -- but the three landed
---    codes were reached by the same method and are not yet confirmed.
+--    view depends on the contradicted mapping, and the check against
+--    Census's own zipped dataset remains open.
 -- ---------------------------------------------------------
 
 
@@ -164,8 +165,9 @@ LEFT JOIN MART.dim_time_monthly t
 --  GROUP BY 1, 2, 3 HAVING COUNT(DISTINCT loaded_at) > 1;
 
 -- 6. Categories present. Expect exactly 3 rows: Commercial, Manufacturing,
---    Power -- 126 each. A fourth row means Highway and Street has landed;
---    update the NOT A TOTAL warning and the category count in schema.md.
+--    Power -- 126 each, all category_verified TRUE. A fourth row means
+--    Highway and Street has landed; update the NOT A TOTAL warning and the
+--    category count in schema.md, and expect it to arrive FALSE.
 -- SELECT construction_category, category_verified, COUNT(*) AS n
 --   FROM MART.fact_spend
 --  GROUP BY construction_category, category_verified

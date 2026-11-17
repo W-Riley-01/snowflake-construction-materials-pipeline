@@ -168,7 +168,7 @@ than one load, the row from the most recent `loaded_at` wins.
 | `source_key` | NUMBER (FK) | → `dim_source`. Constant `2` (Census VIP) by construction |
 | `construction_category` | VARCHAR | Degenerate dimension. **Commercial, Manufacturing, Power** today. `Unknown` = a code not in the STAGING map. Derived from `category_code` in STAGING, not read from the label stamped at load. (Stage 5 Decision 13) |
 | `spend_amount` | NUMBER(38,6) | Millions of dollars, **not seasonally adjusted**. **Additive** across months and categories — but see below. |
-| `category_verified` | BOOLEAN | FALSE while the code-to-category mapping is an unverified inference. FALSE on every row today. (Stage 5 Decision 14) |
+| `category_verified` | BOOLEAN | TRUE when the category's values were checked against an independent republication of the Census series (value-level check, 2026-10-02; not the authoritative code table). TRUE on every row today. (Stage 5 Decisions 14, 17) |
 
 **Not a total.** Highway and Street is not landed, so summing across categories
 gives the spend of three categories, not total construction spending.
@@ -273,4 +273,4 @@ erDiagram
 | `fact_spend` built as a view; no `spend_key` | Same reasoning as `production_key` — a view cannot hold a stable surrogate | Stage 5 D4 |
 | `fact_spend` holds three categories, not four | Highway and Street is not landed; its code is the disputed one | Census D1–D2 |
 | `construction_category` derived from `category_code` in STAGING | The label was stamped at load from an inference; the code is what Census sent | Stage 5 D13 |
-| `fact_spend` gains `category_verified` | The code-to-category mapping has not been checked against a source of record | Stage 5 D14 |
+| `fact_spend` gains `category_verified` | The code-to-category mapping is an inference; the flag records whether it has been checked | Stage 5 D14, D17 |

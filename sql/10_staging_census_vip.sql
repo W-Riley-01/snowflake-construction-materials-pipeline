@@ -6,12 +6,13 @@
 -- What this does, in two sentences: types the Census construction
 -- spending observations, derives the construction category from the
 -- category CODE Census sent through one map in this view, and carries a
--- verified/unverified flag on every row because the code-to-category
--- mapping has not yet been checked against a source of record. It is a
+-- verified flag on every row, set TRUE only for a category whose values
+-- were checked against an independent republication of the Census
+-- series (Stage 5 Decision 17). It is a
 -- VIEW (Stage 5 Decision 1), so correcting the mapping is an edit to
 -- this file, not a re-fetch.
 --
--- Decision log: docs/data_sources.md, Stage 5 Decisions 13-15.
+-- Decision log: docs/data_sources.md, Stage 5 Decisions 13-15 and 17.
 -- Depends on:   RAW.CENSUS_VIP_RAW (loaded; see Census Decisions 1-2)
 --
 -- Shape: unlike BLS, every RAW row here is ONE observation (one JSON
@@ -27,7 +28,7 @@ USE SCHEMA STAGING;
 CREATE OR REPLACE VIEW STAGING.stg_census_vip (
     category_code        COMMENT 'Census category code exactly as the API returned it, e.g. 03XX. This is the fact; the category name is our interpretation of it.',
     construction_category COMMENT 'Category name derived from category_code through the map in this view. Unknown when the code is not in the map, so an unmapped code is visible rather than dropped.',
-    category_verified    COMMENT 'FALSE until the code-to-category mapping is checked against the Census zipped VIP dataset (data_sources.md open item 2). Confidence in the inference method is not verification against a source of record.',
+    category_verified    COMMENT 'TRUE when the category values were checked against an independent republication of the Census series (FRED, 2026-10-02): every settled month identical. FALSE for any category not so checked. A value-level check, not the authoritative Census code table; the disputed codes 02XX and 12XX are not landed. See Stage 5 Decision 17.',
     category_label_raw   COMMENT 'The category label stamped onto the row by the fetch script at load time. Kept only so a disagreement with construction_category is detectable.',
     year                 COMMENT 'Calendar year parsed from time. NULL if time is not YYYY-MM.',
     month                COMMENT 'Month 1-12 parsed from time. NULL if time is not YYYY-MM, so a malformed period is visible rather than mislabelled.',
@@ -93,12 +94,16 @@ parsed AS (
 -- if a mapping turns out to be wrong, one line below changes and no
 -- data is re-fetched.
 --
--- category_verified is FALSE for every row because the mapping is
--- still an inference. Census Decision 1 logged these as high
--- confidence in a METHOD, and the Census reply that contradicted
--- another code in the same table shows why that is not the same as
--- verification. When a code is checked against the zipped VIP
--- dataset, set its flag to TRUE here -- nothing else changes.
+-- category_verified is TRUE only for a category whose values were
+-- checked against an independent republication of the Census series
+-- (Stage 5 Decision 17). On 2026-10-02 all three landed categories
+-- passed: yearly sums for 2016-2025 and Jan-Apr 2026 identical to
+-- FRED's republication, with only the two newest months differing, as
+-- Census revises them. That is strong value-level evidence, not the
+-- authoritative code table. Census Decision 1 logged these mappings as
+-- high confidence in a METHOD, and the Census reply that contradicted
+-- another code in the same table shows why that is not verification.
+-- A new category defaults to FALSE here until it passes the same check.
 --
 -- Highway and Street is deliberately absent: it is not landed, and
 -- its code is the disputed one (02XX vs 12XX). Adding it later is one
@@ -110,9 +115,9 @@ category_map AS (
         column2 AS construction_category,
         column3 AS category_verified
     FROM VALUES
-        ('03XX', 'Commercial',    FALSE),
-        ('11XX', 'Power',         FALSE),
-        ('20IX', 'Manufacturing', FALSE)
+        ('03XX', 'Commercial',    TRUE),
+        ('11XX', 'Power',         TRUE),
+        ('20IX', 'Manufacturing', TRUE)
 )
 
 SELECT
@@ -202,8 +207,9 @@ LEFT JOIN category_map m
 --   FROM STAGING.stg_census_vip
 --  GROUP BY 1, 2, 3, 4 HAVING COUNT(*) > 1;
 
--- 9. Verification status. Expect 378 rows, all category_verified FALSE,
---    until the mapping is checked against the zipped VIP dataset.
+-- 9. Verification status. Expect 378 rows, all category_verified TRUE
+--    (checked against an independent republication, 2026-10-02). A row
+--    with FALSE is a category that has not passed that check.
 -- SELECT category_verified, COUNT(*) AS n
 --   FROM STAGING.stg_census_vip GROUP BY category_verified;
 
