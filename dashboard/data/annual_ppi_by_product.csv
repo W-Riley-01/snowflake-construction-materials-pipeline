@@ -1,0 +1,71 @@
+year,series_id,material_name,ppi_avg
+2016,WPU1322,Cement,235.20
+2017,WPU1322,Cement,245.98
+2018,WPU1322,Cement,252.09
+2019,WPU1322,Cement,258.08
+2020,WPU1322,Cement,260.74
+2021,WPU1322,Cement,271.03
+2022,WPU1322,Cement,296.92
+2023,WPU1322,Cement,333.12
+2024,WPU1322,Cement,352.69
+2025,WPU1322,Cement,358.39
+2016,WPU133,Concrete products,246.99
+2017,WPU133,Concrete products,254.14
+2018,WPU133,Concrete products,263.66
+2019,WPU133,Concrete products,271.69
+2020,WPU133,Concrete products,279.13
+2021,WPU133,Concrete products,292.85
+2022,WPU133,Concrete products,329.93
+2023,WPU133,Concrete products,366.06
+2024,WPU133,Concrete products,384.82
+2025,WPU133,Concrete products,392.85
+2016,WPU1331,Concrete block and brick,246.90
+2017,WPU1331,Concrete block and brick,252.55
+2018,WPU1331,Concrete block and brick,259.66
+2019,WPU1331,Concrete block and brick,269.61
+2020,WPU1331,Concrete block and brick,277.66
+2021,WPU1331,Concrete block and brick,289.44
+2022,WPU1331,Concrete block and brick,324.18
+2023,WPU1331,Concrete block and brick,359.97
+2024,WPU1331,Concrete block and brick,380.82
+2025,WPU1331,Concrete block and brick,394.31
+2016,WPU1332,Concrete pipe,223.28
+2017,WPU1332,Concrete pipe,226.70
+2018,WPU1332,Concrete pipe,227.97
+2019,WPU1332,Concrete pipe,237.02
+2020,WPU1332,Concrete pipe,249.15
+2021,WPU1332,Concrete pipe,260.59
+2022,WPU1332,Concrete pipe,311.67
+2023,WPU1332,Concrete pipe,352.29
+2024,WPU1332,Concrete pipe,374.45
+2025,WPU1332,Concrete pipe,397.86
+2016,WPU1333,Ready-mixed concrete,252.62
+2017,WPU1333,Ready-mixed concrete,260.73
+2018,WPU1333,Ready-mixed concrete,271.60
+2019,WPU1333,Ready-mixed concrete,278.18
+2020,WPU1333,Ready-mixed concrete,285.26
+2021,WPU1333,Ready-mixed concrete,296.10
+2022,WPU1333,Ready-mixed concrete,326.48
+2023,WPU1333,Ready-mixed concrete,362.72
+2024,WPU1333,Ready-mixed concrete,383.85
+2025,WPU1333,Ready-mixed concrete,386.97
+2016,WPU1334,Precast concrete products,248.83
+2017,WPU1334,Precast concrete products,255.24
+2018,WPU1334,Precast concrete products,264.88
+2019,WPU1334,Precast concrete products,277.58
+2020,WPU1334,Precast concrete products,285.67
+2021,WPU1334,Precast concrete products,308.80
+2022,WPU1334,Precast concrete products,351.49
+2023,WPU1334,Precast concrete products,381.99
+2024,WPU1334,Precast concrete products,394.46
+2025,WPU1334,Precast concrete products,413.24
+2016,WPU1335,Prestressed concrete products,213.86
+2017,WPU1335,Prestressed concrete products,220.12
+2018,WPU1335,Prestressed concrete products,228.20
+2019,WPU1335,Prestressed concrete products,233.72
+2020,WPU1335,Prestressed concrete products,237.58
+2021,WPU1335,Prestressed concrete products,255.87
+2022,WPU1335,Prestressed concrete products,321.39
+2023,WPU1335,Prestressed concrete products,357.77
+2024,WPU1335,Prestressed concrete products,365.30
+2025,WPU1335,Prestressed concrete products,366.10

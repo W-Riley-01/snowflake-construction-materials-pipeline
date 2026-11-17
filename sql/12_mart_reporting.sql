@@ -5,9 +5,9 @@
 -- What this does, in two sentences: builds one reporting view that
 -- lines up all three sources at the only grain they share (calendar
 -- year), and a read-only role that can SELECT from MART and nothing
--- else -- the role Power BI connects with.
+-- else -- the role a BI tool connects with.
 --
--- Decision log: docs/data_sources.md, Stage 6 Decisions 1-3.
+-- Decision log: docs/data_sources.md, Stage 6 Decisions 1-2.
 -- Depends on:   sql/06 (dimensions) and sql/07, sql/09, sql/11 (fact views)
 --
 -- Drill-across, not a join of facts: each fact is aggregated to year
@@ -120,7 +120,7 @@ SELECT y.year,
 -- ---------------------------------------------------------
 -- 2. Read-only BI role (Stage 6 Decision 2)
 -- ---------------------------------------------------------
--- Power BI connects with this role. It can read MART and nothing else:
+-- BI tools connect with this role. It can read MART and nothing else:
 -- no RAW, no STAGING, no create or write. MART's fact views read
 -- STAGING with the view owner's privileges, so the role needs SELECT
 -- on the views only. SECURITYADMIN holds MANAGE GRANTS, so it can grant

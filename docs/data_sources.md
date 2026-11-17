@@ -1647,8 +1647,8 @@ single-load result.
 ### Decision 1 — Annual comparison built as a MART view, not in Power BI
 
 **Chosen:** `MART.rpt_annual_cement_market` aggregates each fact to calendar
-year on its own, then joins the yearly results on `year` (a drill-across). Power
-BI reads it as a standalone table with no relationships.
+year on its own, then joins the yearly results on `year` (a drill-across). Charts
+and BI tools read it as one table at year grain.
 
 **Rejected alternative:** load the facts into Power BI and do the annual
 comparison in DAX, with a year bridge table relating the monthly and annual
@@ -1664,14 +1664,14 @@ would let a monthly axis repeat an annual USGS figure twelve times.
 a fact view changes. `is_complete_year` is part of the contract: the current
 year is partial on both monthly sources.
 
-### Decision 2 — Power BI connects with a read-only `MART_READER` role
+### Decision 2 — BI access through a read-only `MART_READER` role
 
 **Chosen:** a role with `USAGE` on the warehouse, database and MART schema, and
 `SELECT` on current and future MART tables and views. Nothing on RAW or STAGING.
 
-**Rejected alternative:** connect with the role that owns the objects.
+**Rejected alternative:** connect BI tools with the role that owns the objects.
 
-**Why:** least privilege. The report only reads MART, so a leaked BI credential
+**Why:** least privilege. A BI tool only reads MART, so a leaked BI credential
 exposes published, public-source data and cannot create, drop or load anything.
 The fact views read STAGING with their owner's privileges, so the role needs
 grants on MART only.
@@ -1679,19 +1679,23 @@ grants on MART only.
 **Cost accepted:** one more role and its grants. Future grants keep new MART
 objects visible without re-granting.
 
-### Decision 3 — Import mode, not DirectQuery
+### Decision 3 — Charts rendered from committed CSV snapshots, not live from Snowflake
 
-**Chosen:** Power BI imports about 1,400 rows.
+**Chosen:** the two README charts are drawn by `dashboard/render_charts.py` from
+CSV snapshots of `rpt_annual_cement_market` and `fact_price`, committed in
+`dashboard/data/`.
 
-**Rejected alternative:** DirectQuery against Snowflake.
+**Rejected alternatives:** a script that queries Snowflake directly, or an
+interactive Power BI report as the first visual layer.
 
-**Why:** the sources publish monthly or annually, so a live connection buys
-nothing. Every DirectQuery visual interaction would resume the warehouse and
-spend credits. Import keeps the report fast and the warehouse suspended.
+**Why:** anyone who clones the repo can reproduce the images without a Snowflake
+account or credentials, and a reader sees the results on the README page with no
+software. The data is small (80 rows) and public-source. Power BI stays the next
+step, and Decisions 1 and 2 are already the warehouse side of it.
 
-**Cost accepted:** the report is current as of its last refresh. The `.pbix`
-also embeds the account host in its query definitions, so it is not published.
-The model and measures are documented in `dashboard/README.md` instead.
+**Cost accepted:** a snapshot goes stale. It must be re-exported after each load,
+and nothing enforces that. Before commit, each CSV column's sum was checked
+against the same sum computed in Snowflake.
 
 ## Open items carried forward
 
